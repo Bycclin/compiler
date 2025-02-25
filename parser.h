@@ -1,0 +1,60 @@
+#ifndef PARSER_H
+#define PARSER_H
+
+#include <string>
+#include <vector>
+#include "lexer.h"
+
+struct ASTNode {
+    std::string type;
+    std::string value;
+    std::vector<ASTNode> children;
+    
+    ASTNode();
+    ASTNode(const std::string& type, const std::vector<ASTNode>& children = {});
+    ASTNode(const std::string& type, const std::string& value, const std::vector<ASTNode>& children = {});
+    void print(size_t level = 0) const;
+};
+
+class Parser {
+public:
+    explicit Parser(const std::vector<Token>& tokens);
+    ASTNode parse();
+
+private:
+    std::vector<Token> tokens;
+    size_t position;
+    
+    ASTNode parseProgram();
+    ASTNode parseStatement();
+    
+    // New control flow constructs
+    ASTNode parseIf();
+    ASTNode parseWhile();
+    ASTNode parseFor();       // New: For-loop statement
+    ASTNode parseWith();      // New: With statement support
+
+    ASTNode parseImport();
+    ASTNode parseFromImport();
+    ASTNode parseFunctionCall();
+    ASTNode parseArgument();
+    
+    // New literal parsing
+    ASTNode parseListLiteral();   // New: List literal support
+    
+    ASTNode parseFunctionDef();
+    ASTNode parseReturn();
+    ASTNode parseYield();
+    ASTNode parseClass();
+    ASTNode parseLambda();
+
+    Token getNextToken();
+    void skipUnsupportedStatement();
+    std::string currentTokenLocation() const;
+
+    // New helper functions to provide enhanced error messages.
+    std::string getLineSnippet(const Token &tk);
+    std::string formatError(const std::string &msg, const Token &tk);
+};
+
+#endif // PARSER_H
