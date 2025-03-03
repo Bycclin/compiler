@@ -7,6 +7,7 @@
 
 enum class TokenType {
     KEYWORD,
+    BUILTIN, // New token type for built‑in functions.
     IDENTIFIER,
     NUMBER,
     STRING,
