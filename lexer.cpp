@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <iterator>
 #include <sstream>
+#include <set>
 
 // Overloaded operator<< to print a TokenType.
 std::ostream& operator<<(std::ostream& os, const TokenType& type) {
     switch (type) {
         case TokenType::KEYWORD: os << "KEYWORD"; break;
+        case TokenType::BUILTIN: os << "BUILTIN"; break;
         case TokenType::IDENTIFIER: os << "IDENTIFIER"; break;
         case TokenType::NUMBER: os << "NUMBER"; break;
         case TokenType::STRING: os << "STRING"; break;
@@ -23,12 +25,12 @@ std::ostream& operator<<(std::ostream& os, const TokenType& type) {
 
 Lexer::Lexer(const std::string& source, const std::string& filename)
     : source(source), position(0), line(1), column(1), filename(filename) {
-    // Updated keywords list to include "exec"
+    // The keywords list now does NOT include built-in function names.
     keywords = {
-        "import", "def", "if", "elif", "else", "while", "return", "for", "in", "is",
-        "print", "break", "continue", "class", "try", "except", "raise", "assert",
-        "with", "as", "pass", "finally", "assert", "yield", "lambda", "from", "global",
-        "exec"
+        "import", "def", "if", "elif", "else", "while", "return",
+        "for", "in", "is", "break", "continue", "class", "try", "except",
+        "raise", "assert", "with", "as", "pass", "finally", "yield",
+        "lambda", "from", "global"
     };
 }
 
@@ -88,6 +90,11 @@ Token Lexer::handleIdentifier() {
         ++column;
     }
     std::string value = source.substr(start, position - start);
+    // Recognize built-in function names in the lexer.
+    static const std::set<std::string> builtinFunctions = {"input", "print", "int", "ascii", "exec"};
+    if (builtinFunctions.find(value) != builtinFunctions.end()) {
+        return Token(TokenType::BUILTIN, value, tokenLine, tokenColumn, filename);
+    }
     if (std::find(keywords.begin(), keywords.end(), value) != keywords.end()) {
         return Token(TokenType::KEYWORD, value, tokenLine, tokenColumn, filename);
     }
