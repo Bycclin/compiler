@@ -1,3 +1,4 @@
+// main.cpp
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -19,21 +20,28 @@
 #include <cstdlib>
 #include <exception>
 #ifdef __APPLE__
-#include <unistd.h>  // for _read on macOS and exec functions
+#include <unistd.h>  // for read on macOS and exec functions
 #else
 #include <unistd.h>
 #include <sys/wait.h>
 #endif
 
-// The CodeGenerator produces assembly code for our Python-like language.
+// The CodeGenerator produces assembly code for our Python‑like language.
 // An extra parameter (brkLabel) propagates the current loop break label.
 class CodeGenerator {
 public:
     explicit CodeGenerator(const ASTNode &ast)
         : astRoot(ast), dataSection(""), functionSection(""), labelCounter(0),
-          sysPathListGenerated(false) {}
+          sysPathListGenerated(false)
+    {
+        // Add built-in names.
+        definedNames.insert("print");
+        definedNames.insert("input");
+        definedNames.insert("int");
+        definedNames.insert("ascii");
+        definedNames.insert("exec");
+    }
 
-    // Extra parameter (brkLabel) propagates the current loop break label.
     void generateBinary(const std::string &outputFile);
     std::string generateAssembly(const ASTNode &node, int indentLevel = 1, bool inFunction = false, const std::string &brkLabel = "");
 
@@ -43,10 +51,10 @@ private:
     std::string functionSection;
     int labelCounter;
     std::set<std::string> compiledModules;
-    // Symbol table for variables
-    std::map<std::string, std::string> variableLabels;
+    std::map<std::string, std::string> variableLabels; // Used for assignment storage.
     bool sysPathListGenerated;
     std::string sysPathListLabel;
+    std::set<std::string> definedNames;  // Track defined variables and functions.
 
     std::string generateLabel(const std::string &prefix);
     std::string escapeString(const std::string &str);
@@ -322,6 +330,10 @@ void CodeGenerator::generateSysPathList() {
     sysPathListGenerated = true;
 }
 
+// Updated generateAssembly:
+// - For "Assignment": Evaluates the RHS expression, stores the result into the variable’s memory slot,
+//   and then reloads the value into %rax so that the assignment expression returns the assigned value.
+// - For "Identifier": Loads the variable's value from its memory slot.
 std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel, bool inFunction, const std::string &brkLabel) {
     std::stringstream ss;
     std::string indent(indentLevel * 4, ' ');
@@ -330,334 +342,116 @@ std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel
         for (const auto &child : node.children)
             ss << generateAssembly(child, indentLevel, false, brkLabel);
     }
+    // Handle assignments: evaluate RHS and store the result in a variable.
     else if (node.type == "Assignment") {
-        std::string varName = node.value;
-        if (variableLabels.find(varName) == variableLabels.end()) {
-            std::string varLabel = generateLabel("var");
-            variableLabels[varName] = varLabel;
+        std::string rhsCode = generateAssembly(node.children[0], indentLevel, inFunction, brkLabel);
+        // If this variable hasn't been assigned before, allocate storage.
+        if (variableLabels.find(node.value) == variableLabels.end()) {
+            std::string varLabel = generateLabel("var_" + node.value);
+            variableLabels[node.value] = varLabel;
             dataSection += varLabel + ": .quad 0\n";
         }
-        std::string varLabel = variableLabels[varName];
-        std::string rhsCode = generateAssembly(node.children[0], indentLevel, false, brkLabel);
         ss << rhsCode;
-        ss << indent << "leaq " << varLabel << "(%rip), %rdi\n"
-           << indent << "movq %rax, " << varLabel << "(%rip)\n";
+        ss << indent << "movq %rax, " << variableLabels[node.value] << "(%rip)\n";
+        // Reload the value into %rax so that the assignment expression returns the assigned value.
+        ss << indent << "movq " << variableLabels[node.value] << "(%rip), %rax\n";
+        return ss.str();
     }
+    // When an identifier is encountered, load its value from memory.
     else if (node.type == "Identifier") {
-        std::string varName = node.value;
-        if (variableLabels.find(varName) == variableLabels.end())
-            throw std::runtime_error("Undefined variable: " + varName);
-        std::string varLabel = variableLabels[varName];
-        ss << indent << "leaq " << varLabel << "(%rip), %rax\n"
-           << indent << "movq (%rax), %rax\n";
+        if (variableLabels.find(node.value) == variableLabels.end())
+            throw std::runtime_error("Name \"" + node.value + "\" is not defined.");
+        ss << indent << "movq " << variableLabels[node.value] << "(%rip), %rax\n";
+        return ss.str();
     }
-    else if (node.type == "Argument") {
-        if (node.value.find('<') != std::string::npos) {
-            size_t pos = node.value.find('<');
-            std::string lhs = node.value.substr(0, pos);
-            std::string rhs = node.value.substr(pos + 1);
-            auto trim = [](std::string s) -> std::string {
-                s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) { return !std::isspace(ch); }));
-                s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) { return !std::isspace(ch); }).base(), s.end());
-                return s;
-            };
-            lhs = trim(lhs);
-            rhs = trim(rhs);
-            std::stringstream ssArg;
-            if (variableLabels.find(lhs) != variableLabels.end()) {
-                std::string varLabel = variableLabels[lhs];
-                ssArg << indent << "leaq " << varLabel << "(%rip), %rax\n"
-                      << indent << "movq (%rax), %rax\n";
-            } else {
-                ssArg << indent << "movq $" << lhs << ", %rax\n";
-            }
-            ssArg << indent << "movq %rax, %r10\n";
-            if (variableLabels.find(rhs) != variableLabels.end()) {
-                std::string varLabel = variableLabels[rhs];
-                ssArg << indent << "leaq " << varLabel << "(%rip), %rax\n"
-                      << indent << "movq (%rax), %rax\n";
-            } else {
-                ssArg << indent << "movq $" << rhs << ", %rax\n";
-            }
-            ssArg << indent << "movq %rax, %r11\n";
-            ssArg << indent << "cmpq %r11, %r10\n";
-            ssArg << indent << "setl %al\n";
-            ssArg << indent << "movzbq %al, %rax\n";
-            return ssArg.str();
-        }
-        else if (node.value.find('>') != std::string::npos) {
-            size_t pos = node.value.find('>');
-            std::string lhs = node.value.substr(0, pos);
-            std::string rhs = node.value.substr(pos + 1);
-            auto trim = [](std::string s) -> std::string {
-                s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) { return !std::isspace(ch); }));
-                s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) { return !std::isspace(ch); }).base(), s.end());
-                return s;
-            };
-            lhs = trim(lhs);
-            rhs = trim(rhs);
-            std::stringstream ssArg;
-            if (variableLabels.find(lhs) != variableLabels.end()) {
-                std::string varLabel = variableLabels[lhs];
-                ssArg << indent << "leaq " << varLabel << "(%rip), %rax\n"
-                      << indent << "movq (%rax), %rax\n";
-            } else {
-                ssArg << indent << "movq $" << lhs << ", %rax\n";
-            }
-            ssArg << indent << "movq %rax, %r10\n";
-            if (variableLabels.find(rhs) != variableLabels.end()) {
-                std::string varLabel = variableLabels[rhs];
-                ssArg << indent << "leaq " << varLabel << "(%rip), %rax\n"
-                      << indent << "movq (%rax), %rax\n";
-            } else {
-                ssArg << indent << "movq $" << rhs << ", %rax\n";
-            }
-            ssArg << indent << "movq %rax, %r11\n";
-            ssArg << indent << "cmpq %r11, %r10\n";
-            ssArg << indent << "setg %al\n";
-            ssArg << indent << "movzbq %al, %rax\n";
-            return ssArg.str();
-        } else {
-            std::string evaluated;
-            if (tryEvaluateArithmetic(node.value, evaluated))
-                return indent + "movq $" + evaluated + ", %rax\n";
-            if (variableLabels.find(node.value) != variableLabels.end()) {
-                std::string varLabel = variableLabels[node.value];
-                return indent + "leaq " + varLabel + "(%rip), %rax\n" +
-                       indent + "movq (%rax), %rax\n";
-            }
-            return "";
-        }
-    }
-    else if ((node.type == "Unsupported" && node.value == "break") || node.type == "Break") {
-        if (brkLabel.empty())
-            return indent + "jmp _exit\n";
-        return indent + "jmp " + brkLabel + "\n";
-    }
-    else if (node.type == "Import") {
-        compileModule(node.value);
-        return "";
-    }
-    else if (node.type == "If") {
-        std::string elseLabel = generateLabel("if_else");
-        std::string endLabel = generateLabel("if_end");
-        ss << generateAssembly(node.children[0], indentLevel, false, brkLabel);
-        ss << indent << "cmpq $0, %rax\n";
-        if (node.children.size() == 3)
-            ss << indent << "je " << elseLabel << "\n";
-        else
-            ss << indent << "je " << endLabel << "\n";
-        ss << generateAssembly(node.children[1], indentLevel, false, brkLabel);
-        ss << indent << "jmp " << endLabel << "\n";
-        if (node.children.size() == 3) {
-            ss << elseLabel << ":\n";
-            ss << generateAssembly(node.children[2], indentLevel, false, brkLabel);
-        }
-        ss << endLabel << ":\n";
-    }
-    else if (node.type == "While") {
-        std::string startLabel = generateLabel("while_start");
-        std::string endLabel = generateLabel("while_end");
-        ss << startLabel << ":\n";
-        ss << generateAssembly(node.children[0], indentLevel, false, brkLabel);
-        ss << indent << "cmpq $0, %rax\n";
-        ss << indent << "je " << endLabel << "\n";
-        // For the loop body, pass the current loop's end label as the break target.
-        ss << generateAssembly(node.children[1], indentLevel, false, endLabel);
-        ss << indent << "jmp " << startLabel << "\n";
-        ss << endLabel << ":\n";
-    }
+    // Handle Boolean literals.
     else if (node.type == "Boolean") {
         if (node.value == "True")
             ss << indent << "movq $1, %rax\n";
         else
             ss << indent << "movq $0, %rax\n";
-    }
-    else if (node.type == "FunctionCall") {
-        if (node.value == "input") {
-            if (!node.children.empty()) {
-                std::string prompt = processLiteral(node.children[0].value, true);
-                std::string label = generateLabel("prompt");
-                dataSection += label + ": .asciz \"" + escapeString(prompt) + "\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            }
-            ss << indent << "call _input\n";
-            return ss.str();
-        }
-        if (node.value == "print") {
-            for (size_t i = 0; i < node.children.size(); i++) {
-                ASTNode arg = node.children[i];
-                if (!arg.value.empty() &&
-                    ((arg.value.front() == '\"' && arg.value.back() == '\"') ||
-                     (arg.value.front() == '\'' && arg.value.back() == '\''))) {
-                    std::string literal = processLiteral(arg.value, true);
-                    std::string label = generateLabel("expr");
-                    dataSection += label + ": .asciz \"" + escapeString(literal) + "\\n\"\n";
-                    ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                       << indent << "call _print_string\n";
-                }
-                else if (arg.value == "sys.path") {
-                    generateSysPathList();
-                    ss << indent << "leaq " << sysPathListLabel << "(%rip), %rdi\n"
-                       << indent << "call _print_list\n";
-                }
-                else {
-                    std::string evaluated;
-                    if (tryEvaluateArithmetic(arg.value, evaluated)) {
-                        std::string label = generateLabel("expr");
-                        dataSection += label + ": .asciz \"" + escapeString(evaluated) + "\\n\"\n";
-                        ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                           << indent << "call _print_string\n";
-                    } else {
-                        std::string literal = processLiteral(arg.value, true);
-                        std::string label = generateLabel("expr");
-                        dataSection += label + ": .asciz \"" + escapeString(literal) + "\\n\"\n";
-                        ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                           << indent << "call _print_string\n";
-                    }
-                }
-            }
-            return ss.str();
-        }
-        if (node.value == "ascii") {
-            if (!node.children.empty()) {
-                std::string literal = processLiteral(node.children[0].value, true);
-                std::string asciiResult = computeAscii(literal);
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"" + escapeString(asciiResult) + "\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            } else {
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"<ascii no argument>\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            }
-            return ss.str();
-        }
-        if (node.value == "int") {
-            if (!node.children.empty()) {
-                // Generate code for the argument so its result (the input string pointer) is in %rax.
-                std::string argCode = generateAssembly(node.children[0], indentLevel, false, brkLabel);
-                ss << argCode;
-                // Move the pointer from %rax to %rdi and call _atoi.
-                ss << indent << "movq %rax, %rdi\n";
-                ss << indent << "call _atoi\n";
-            } else {
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"<int no argument>\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            }
-            return ss.str();
-        }
-        if (node.value == "exec") {
-            if (!node.children.empty()) {
-                std::string code = processLiteral(node.children[0].value, true);
-                std::string label = generateLabel("exec");
-                dataSection += label + ": .asciz \"" + escapeString(code) + "\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n";
-                ss << indent << "call _exec\n";
-            }
-            return ss.str();
-        }
-        {
-            std::string evaluated;
-            if (tryEvaluateArithmetic(node.value, evaluated)) {
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"" + escapeString(evaluated) + "\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            } else {
-                std::string literal = processLiteral(node.value, true);
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"" + escapeString(literal) + "\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            }
-        }
         return ss.str();
     }
-    else if (node.type == "FunctionDef") {
-        if (node.value == "test") {
-            std::string label = "_" + node.value;
-            functionSection += label + ":\n";
-            functionSection += "    movq %rdi, %rax\n"
-                             "    addq $1, %rax\n"
-                             "    ret\n";
-            return "";
-        } else {
-            std::string label = "_" + node.value;
-            functionSection += label + ":\n";
-            functionSection += generateAssembly(node.children[1], 1, true, brkLabel);
-            functionSection += "    ret\n";
-            return "";
-        }
+    // Handle while loops.
+    else if (node.type == "While") {
+        std::string condLabel = generateLabel("while_cond");
+        std::string endLabel = generateLabel("while_end");
+        ss << condLabel << ":\n";
+        ss << generateAssembly(node.children[0], indentLevel + 1, inFunction, brkLabel); // Condition
+        ss << indent << "cmpq $0, %rax\n";
+        ss << indent << "je " << endLabel << "\n";
+        ss << generateAssembly(node.children[1], indentLevel + 1, inFunction, brkLabel); // Loop body
+        ss << indent << "jmp " << condLabel << "\n";
+        ss << endLabel << ":\n";
+        return ss.str();
     }
-    else if (node.type == "Lambda") {
-        std::string lambdaLabel = generateLabel("lambda");
-        functionSection += lambdaLabel + ":\n";
-        functionSection += generateAssembly(node.children[1], 1, true, brkLabel);
-        functionSection += "    ret\n";
-        std::string label = generateLabel("expr");
-        dataSection += label + ": .asciz \"<lambda function: " + lambdaLabel + ">\\n\"\n";
-        std::stringstream ssLambda;
-        ssLambda << indent << "leaq " << label << "(%rip), %rdi\n"
-                 << indent << "call _print_string\n";
-        return ssLambda.str();
-    }
-    else if (node.type == "Return") {
+    // Handle built-in input function.
+    else if (node.type == "FunctionCall" && node.value == "input") {
         if (!node.children.empty()) {
-            std::string exprStr = node.children[0].value;
-            std::string evaluated;
-            if (!exprStr.empty() && (exprStr.front()=='f' || exprStr.front()=='F') &&
-                (exprStr[1]=='\"' || exprStr[1]=='\'')) {
-                std::string processed = processFString(exprStr);
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"" + escapeString(processed) + "\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "movq %rdi, %rax\n";
-            } else if (tryEvaluateArithmetic(exprStr, evaluated))
-                ss << indent << "movq $" << evaluated << ", %rax\n";
+            std::string prompt = processLiteral(node.children[0].value, true);
+            std::string label = generateLabel("prompt");
+            dataSection += label + ": .asciz \"" + escapeString(prompt) + "\"\n";
+            ss << indent << "leaq " << label << "(%rip), %rdi\n"
+               << indent << "call _print_string\n";
+        }
+        ss << indent << "call _input\n";
+        return ss.str();
+    }
+    // Handle built-in print function with default end parameter.
+    else if (node.type == "FunctionCall" && node.value == "print") {
+        std::vector<ASTNode> positionalArgs;
+        std::string endValue = "\n"; // default end is newline
+        for (const auto &child : node.children) {
+            if (child.type == "KeywordArgument" && child.value == "end") {
+                endValue = processLiteral(child.children[0].value, true);
+            } else {
+                positionalArgs.push_back(child);
+            }
+        }
+        // Process each positional argument.
+        for (const auto &arg : positionalArgs) {
+            if (arg.value == "input()") {
+                ASTNode inputCall("FunctionCall", "input", {});
+                ss << generateAssembly(inputCall, indentLevel, inFunction, brkLabel);
+            } else if (arg.type == "FunctionCall") {
+                ss << generateAssembly(arg, indentLevel, inFunction, brkLabel);
+            }
             else {
-                std::string literal = processLiteral(exprStr, false);
-                std::string label = generateLabel("expr");
-                dataSection += label + ": .asciz \"" + escapeString(literal) + "\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "movq %rdi, %rax\n";
-            }
-        }
-        ss << indent << "ret\n";
-        return ss.str();
-    }
-    else if (node.type == "Yield") {
-        if (!node.children.empty()) {
-            std::string exprStr = node.children[0].value;
-            std::string evaluated;
-            if (tryEvaluateArithmetic(exprStr, evaluated)) {
-                std::string label = generateLabel("yield");
-                dataSection += label + ": .asciz \"" + escapeString(evaluated) + "\\n\"\n";
-                ss << indent << "leaq " << label << "(%rip), %rdi\n"
-                   << indent << "call _print_string\n";
-            } else {
-                std::string literal = processLiteral(exprStr, false);
-                std::string label = generateLabel("yield");
-                dataSection += label + ": .asciz \"" + escapeString(literal) + "\\n\"\n";
+                std::string text;
+                if (!arg.value.empty() && (arg.value[0] == '"' || arg.value[0] == '\'')) {
+                    text = processLiteral(arg.value, true);
+                } else {
+                    if (definedNames.find(arg.value) == definedNames.end())
+                        throw std::runtime_error("Name \"" + arg.value + "\" is not defined.");
+                    text = arg.value;
+                }
+                std::string label = generateLabel("print_arg");
+                dataSection += label + ": .asciz \"" + escapeString(text) + "\"\n";
                 ss << indent << "leaq " << label << "(%rip), %rdi\n"
                    << indent << "call _print_string\n";
             }
         }
-        ss << indent << "ret\n";
+        std::string endLabel = generateLabel("print_end");
+        dataSection += endLabel + ": .asciz \"" + escapeString(endValue) + "\"\n";
+        ss << indent << "leaq " << endLabel << "(%rip), %rdi\n"
+           << indent << "call _print_string\n";
         return ss.str();
     }
-    else if (node.type == "Class") {
-        std::string label = "_" + node.value;
-        functionSection += label + ":\n";
-        functionSection += "    ret\n";
-        return "";
+    // Handle built-in int function.
+    else if (node.type == "FunctionCall" && node.value == "int") {
+        if (node.children.empty())
+            throw std::runtime_error("int() requires an argument.");
+        ss << generateAssembly(node.children[0], indentLevel, inFunction, brkLabel);
+        ss << indent << "movq %rax, %rdi\n";
+        ss << indent << "call _atoi\n";
+        return ss.str();
+    }
+    // For any FunctionCall not handled above, raise an error.
+    else if (node.type == "FunctionCall") {
+        throw std::runtime_error("Function \"" + node.value + "\" is not defined.");
     }
     else {
+        // For other nodes, no assembly is generated.
         return "";
     }
     return ss.str();
@@ -670,64 +464,31 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
     std::string preText = "    leaq _debug(%rip), %rdi\n"
                           "    call _print_string\n";
     textCode = preText + textCode;
-    // Generate global _exit label.
-    std::stringstream finalAsm;
-    finalAsm << ".section __DATA,__data\n";
-    finalAsm << "_debug: .asciz \"DEBUG: _start entered\\n\"\n";
-    finalAsm << "_input_buffer: .space 256\n";
-    finalAsm << dataSection << "\n";
-    finalAsm << ".section __TEXT,__text,regular,pure_instructions\n";
-    finalAsm << ".globl _start\n";
-    finalAsm << "_start:\n" << textCode << "\n";
-    finalAsm << functionSection << "\n";
-    finalAsm << "\n.globl _print_list\n";
-    finalAsm << "_print_list:\n"
-             "    pushq %rbp\n"
-             "    movq %rsp, %rbp\n"
-             "    pushq %r12\n"
-             "    movq %rdi, %r12\n"
-             "    leaq _list_open(%rip), %rdi\n"
-             "    call _print_string\n"
-             "_print_list_loop:\n"
-             "    movq (%r12), %rax\n"
-             "    cmpq $0, %rax\n"
-             "    je _print_list_end_loop\n"
-             "    leaq _quote(%rip), %rdi\n"
-             "    call _print_string\n"
-             "    movq (%r12), %rdi\n"
-             "    call _print_string\n"
-             "    leaq _quote(%rip), %rdi\n"
-             "    call _print_string\n"
-             "    addq $8, %r12\n"
-             "    movq (%r12), %rax\n"
-             "    cmpq $0, %rax\n"
-             "    jne _print_list_print_comma\n"
-             "    jmp _print_list_loop\n"
-             "_print_list_print_comma:\n"
-             "    leaq _comma(%rip), %rdi\n"
-             "    call _print_string\n"
-             "    jmp _print_list_loop\n"
-             "_print_list_end_loop:\n"
-             "    leaq _list_close(%rip), %rdi\n"
-             "    call _print_string\n"
-             "    popq %r12\n"
-             "    popq %rbp\n"
-             "    ret\n"
-             "\n# Data for _print_list\n"
-             "_list_open: .asciz \"[\"\n"
-             "_quote: .asciz \"'\"\n"
-             "_comma: .asciz \", \"\n"
-             "_list_close: .asciz \"]\\n\"\n";
     
-    // Use conditional compilation to choose proper syscall numbers.
+    std::stringstream finalAsm;
 #if defined(__APPLE__) || defined(__MACH__)
-    std::string write_syscall = "    movq $0x2000004, %rax\n"; // macOS write
-    std::string exit_syscall  = "    movq $0x2000001, %rax\n"; // macOS exit
+    finalAsm << ".section __DATA,__data\n";
 #else
-    std::string write_syscall = "    movq $1, %rax\n";  // Linux write
-    std::string exit_syscall  = "    movq $60, %rax\n"; // Linux exit
+    finalAsm << ".data\n";
 #endif
-
+    finalAsm << "_debug: .asciz \"DEBUG: _start entered\\n\"\n";
+    // Reserve 1025 bytes: 1024 for data plus one for the null terminator.
+    finalAsm << "_input_buffer: .space 1025\n";
+    finalAsm << dataSection << "\n";
+#if defined(__APPLE__) || defined(__MACH__)
+    finalAsm << ".section __TEXT,__text,regular,pure_instructions\n";
+#else
+    finalAsm << ".text\n";
+#endif
+    finalAsm << ".globl _start\n";
+    finalAsm << "_start:\n";
+    // Adjust stack pointer for proper alignment.
+    finalAsm << "    subq $8, %rsp\n";
+    finalAsm << textCode << "\n";
+    finalAsm << functionSection << "\n";
+    // Added call to _exit to ensure the program terminates properly.
+    finalAsm << "    call _exit\n";
+    
     // _print_string definition.
     finalAsm << "\n.globl _print_string\n";
     finalAsm << "_print_string:\n"
@@ -741,8 +502,13 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
              "    incq %rcx\n"
              "    incq %rdi\n"
              "    jmp .print_string_loop\n"
-             ".print_string_done:\n" + write_syscall +
-             "    movq $1, %rdi\n"
+             ".print_string_done:\n";
+#if defined(__APPLE__) || defined(__MACH__)
+    finalAsm << "    movq $0x2000004, %rax\n"; // macOS write
+#else
+    finalAsm << "    movq $1, %rax\n";          // Linux write
+#endif
+    finalAsm << "    movq $1, %rdi\n"
              "    movq %r8, %rsi\n"
              "    movq %rcx, %rdx\n"
              "    syscall\n"
@@ -755,24 +521,34 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
              "    pushq %rbp\n"
              "    movq %rsp, %rbp\n";
 #if defined(__APPLE__) || defined(__MACH__)
-    // On macOS, call the C library function _read.
     finalAsm << "    movq $0, %rdi\n"            // stdin = 0
              "    leaq _input_buffer(%rip), %rsi\n"
-             "    movq $256, %rdx\n"
-             "    call _read\n";
+             "    movq $1024, %rdx\n"           // read up to 1024 bytes
+             "    movq $0x2000003, %rax\n"      // macOS read syscall
+             "    syscall\n";
 #else
-    // On Linux, use the raw syscall.
     finalAsm << "    movq $0, %rdi\n"            // stdin = 0
              "    leaq _input_buffer(%rip), %rsi\n"
-             "    movq $256, %rdx\n"
-             "    movq $0, %rax\n"              // Linux syscall number for read = 0
+             "    movq $1024, %rdx\n"           // read up to 1024 bytes
+             "    movq $0, %rax\n"              // Linux read syscall (0)
              "    syscall\n";
 #endif
-    finalAsm << "    leaq _input_buffer(%rip), %rax\n"
+    finalAsm << "    testq %rax, %rax\n"
+             "    js .read_error\n"
+             "    movq %rax, %rcx\n"
+             "    leaq _input_buffer(%rip), %rdx\n"
+             "    addq %rcx, %rdx\n"
+             "    movb $0, (%rdx)\n"
+             "    leaq _input_buffer(%rip), %rax\n"
+             "    popq %rbp\n"
+             "    ret\n"
+             ".read_error:\n"
+             "    leaq _input_buffer(%rip), %rax\n"
+             "    movb $0, (%rax)\n"
              "    popq %rbp\n"
              "    ret\n";
     
-    // _atoi: simple conversion (non-negative only).
+    // _atoi definition.
     finalAsm << "\n.globl _atoi\n";
     finalAsm << "_atoi:\n"
              "    pushq %rbp\n"
@@ -796,24 +572,34 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
              "    popq %rbp\n"
              "    ret\n";
     
-    // _exec: executes a command string by calling system()
+    // _exec definition.
     finalAsm << "\n.globl _exec\n";
-    finalAsm << "_exec:\n"
-             "    pushq %rbp\n"
+    finalAsm << "_exec:\n";
+#if defined(__APPLE__) || defined(__MACH__)
+    finalAsm << "    pushq %rbp\n"
+             "    movq %rsp, %rbp\n"
+             "    call _system\n"
+             "    popq %rbp\n"
+             "    ret\n";
+#else
+    finalAsm << "    pushq %rbp\n"
              "    movq %rsp, %rbp\n"
              "    call system\n"
              "    popq %rbp\n"
              "    ret\n";
+#endif
     
-    // Global _exit definition.
+    // _exit definition.
 #if defined(__APPLE__) || defined(__MACH__)
     finalAsm << "\n.globl _exit\n";
-    finalAsm << "_exit:\n" + exit_syscall +
+    finalAsm << "_exit:\n"
+             "    movq $0x2000001, %rax\n"      // macOS exit syscall
              "    movq $0, %rdi\n"
              "    syscall\n";
 #else
     finalAsm << "\n.globl _exit\n";
-    finalAsm << "_exit:\n" + exit_syscall +
+    finalAsm << "_exit:\n"
+             "    movq $60, %rax\n"             // Linux exit syscall
              "    movq $0, %rdi\n"
              "    syscall\n";
 #endif
@@ -836,8 +622,6 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
     std::cout << "[CodeGenerator] Binary executable generated: " << outputFile << "\n";
 }
 
-// New function: execBinary()
-// If the compiler is invoked with a third argument "exec", the generated binary is executed.
 void execBinary(const std::string &binary) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -858,14 +642,22 @@ int main(int argc, char *argv[]) {
         std::cerr << "Usage: ./compile <source_file> <output_file> [exec]\n";
         return 1;
     }
-    std::ifstream ifs(argv[1]);
-    if (!ifs) {
-        std::cerr << "Failed to open source file: " << argv[1] << "\n";
-        return 1;
+    std::string source;
+    // If the source file argument is "-", read from standard input.
+    if (std::string(argv[1]) == "-") {
+        std::stringstream buffer;
+        buffer << std::cin.rdbuf();
+        source = buffer.str();
+    } else {
+        std::ifstream ifs(argv[1]);
+        if (!ifs) {
+            std::cerr << "Failed to open source file: " << argv[1] << "\n";
+            return 1;
+        }
+        std::stringstream buffer;
+        buffer << ifs.rdbuf();
+        source = buffer.str();
     }
-    std::stringstream buffer;
-    buffer << ifs.rdbuf();
-    std::string source = buffer.str();
     Lexer lexer(source, argv[1]);
     std::vector<Token> tokens = lexer.tokenize();
     Parser parser(tokens);
@@ -874,10 +666,9 @@ int main(int argc, char *argv[]) {
     try {
         codeGen.generateBinary(argv[2]);
     } catch (const std::exception &ex) {
-        std::cerr << "compile: " << "\033[1;31merror:\033[0;1m " << ex.what() << "\033[0m\n";
+        std::cerr << "compile: \033[1;31merror:\033[0;1m " << ex.what() << "\033[0m\n";
         return 1;
     }
-    // If a third argument "exec" is provided, execute the generated binary.
     if (argc >= 4 && std::string(argv[3]) == "exec") {
         std::cout << "[Executor] Running generated binary: " << argv[2] << "\n";
         execBinary(argv[2]);
