@@ -1,3 +1,4 @@
+// parser.cpp
 #include "parser.h"
 #include <stdexcept>
 #include <iostream>
@@ -159,14 +160,9 @@ ASTNode Parser::parseStatement() {
             return parseFromImport();
     }
     
-    if (tokens[position].type == TokenType::IDENTIFIER &&
-       (tokens[position].value == "True" || tokens[position].value == "False")) {
-        ASTNode boolNode("Boolean", tokens[position].value);
-        ++position;
-        return boolNode;
-    }
-    
+    // Accept BUILTIN tokens as valid function calls too.
     if (tokens[position].type == TokenType::IDENTIFIER ||
+        tokens[position].type == TokenType::BUILTIN ||
         (tokens[position].type == TokenType::KEYWORD &&
          (tokens[position].value == "print" || tokens[position].value == "int" || tokens[position].value == "input"))) {
          return parseFunctionCall();
@@ -332,8 +328,25 @@ ASTNode Parser::parseListLiteral() {
 
 //------------------------------------------------------------
 // Modified parseArgument to avoid consuming tokens from subsequent statements
+// and to properly handle function calls and identifiers.
 //------------------------------------------------------------
 ASTNode Parser::parseArgument() {
+    // If the next tokens indicate a function call, parse it as such.
+    if ((tokens[position].type == TokenType::IDENTIFIER ||
+         tokens[position].type == TokenType::BUILTIN ||
+         (tokens[position].type == TokenType::KEYWORD &&
+          (tokens[position].value == "input" || tokens[position].value == "print" || tokens[position].value == "int")))
+         && (position + 1 < tokens.size() &&
+             tokens[position+1].type == TokenType::PUNCTUATION && tokens[position+1].value == "(")) {
+        return parseFunctionCall();
+    }
+    // If the token is an identifier (and not a function call), return an Identifier node.
+    if (tokens[position].type == TokenType::IDENTIFIER) {
+         ASTNode idNode("Identifier", tokens[position].value);
+         ++position;
+         return idNode;
+    }
+    
     if (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "[")
         return parseListLiteral();
     
@@ -401,7 +414,8 @@ ASTNode Parser::parseArgument() {
 
 ASTNode Parser::parseFunctionCall() {
     if (tokens[position].type != TokenType::IDENTIFIER &&
-        tokens[position].type != TokenType::KEYWORD)
+        tokens[position].type != TokenType::KEYWORD &&
+        tokens[position].type != TokenType::BUILTIN)  // Accept BUILTIN tokens as well.
          throw std::runtime_error(formatError("Expected function name", tokens[position]));
     std::string functionName = tokens[position].value;
     ++position;
@@ -411,7 +425,9 @@ ASTNode Parser::parseFunctionCall() {
          functionName += ".";
          ++position;
          if (position < tokens.size() &&
-             (tokens[position].type == TokenType::IDENTIFIER || tokens[position].type == TokenType::KEYWORD)) {
+             (tokens[position].type == TokenType::IDENTIFIER ||
+              tokens[position].type == TokenType::KEYWORD ||
+              tokens[position].type == TokenType::BUILTIN)) {
              functionName += tokens[position].value;
              ++position;
          } else {
