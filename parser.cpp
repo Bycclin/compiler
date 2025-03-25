@@ -1,4 +1,3 @@
-// parser.cpp
 #include "parser.h"
 #include <stdexcept>
 #include <iostream>
@@ -327,8 +326,8 @@ ASTNode Parser::parseListLiteral() {
 }
 
 //------------------------------------------------------------
-// Modified parseArgument to avoid consuming tokens from subsequent statements
-// and to properly handle function calls and identifiers.
+// Modified parseArgument to properly handle expressions.
+// It now accumulates tokens until a colon (":") or other stop token is reached.
 //------------------------------------------------------------
 ASTNode Parser::parseArgument() {
     // If the next tokens indicate a function call, parse it as such.
@@ -340,11 +339,15 @@ ASTNode Parser::parseArgument() {
              tokens[position+1].type == TokenType::PUNCTUATION && tokens[position+1].value == "(")) {
         return parseFunctionCall();
     }
-    // If the token is an identifier (and not a function call), return an Identifier node.
+    // If the token is an identifier not followed by an operator, return an Identifier node.
     if (tokens[position].type == TokenType::IDENTIFIER) {
-         ASTNode idNode("Identifier", tokens[position].value);
-         ++position;
-         return idNode;
+        if (position + 1 < tokens.size() && tokens[position+1].type == TokenType::OPERATOR) {
+            // Fall through to accumulation loop.
+        } else {
+            ASTNode idNode("Identifier", tokens[position].value);
+            ++position;
+            return idNode;
+        }
     }
     
     if (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "[")
@@ -360,7 +363,7 @@ ASTNode Parser::parseArgument() {
     std::string argumentValue;
     int bracketDepth = 0;
     int parenDepth = 0;
-    // Expanded stopKeywords to prevent over-consuming tokens from subsequent statements.
+    // Stop keywords to prevent over-consuming tokens from subsequent statements.
     std::set<std::string> stopKeywords = {"def", "return", "yield", "class", "if", "while", "for", "with", "import", "from", "print", "break", "continue", "pass", "try", "except", "raise", "finally"};
     
     int tokenCount = 0;
