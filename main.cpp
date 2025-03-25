@@ -1,4 +1,3 @@
-// main.cpp
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -17,7 +16,6 @@
 #include <map>
 #include "lexer.h"
 #include "parser.h"
-#include <cstdlib>
 #include <exception>
 #ifdef __APPLE__
 #include <unistd.h>  // for read on macOS and exec functions
@@ -504,9 +502,9 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
              "    jmp .print_string_loop\n"
              ".print_string_done:\n";
 #if defined(__APPLE__) || defined(__MACH__)
-    finalAsm << "    movq $0x2000004, %rax\n"; // macOS write
+    finalAsm << "    movq $0x2000004, %rax\n";
 #else
-    finalAsm << "    movq $1, %rax\n";          // Linux write
+    finalAsm << "    movq $1, %rax\n";
 #endif
     finalAsm << "    movq $1, %rdi\n"
              "    movq %r8, %rsi\n"
@@ -521,16 +519,16 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
              "    pushq %rbp\n"
              "    movq %rsp, %rbp\n";
 #if defined(__APPLE__) || defined(__MACH__)
-    finalAsm << "    movq $0, %rdi\n"            // stdin = 0
+    finalAsm << "    movq $0, %rdi\n"
              "    leaq _input_buffer(%rip), %rsi\n"
-             "    movq $1024, %rdx\n"           // read up to 1024 bytes
-             "    movq $0x2000003, %rax\n"      // macOS read syscall
+             "    movq $1024, %rdx\n"
+             "    movq $0x2000003, %rax\n"
              "    syscall\n";
 #else
-    finalAsm << "    movq $0, %rdi\n"            // stdin = 0
+    finalAsm << "    movq $0, %rdi\n"
              "    leaq _input_buffer(%rip), %rsi\n"
-             "    movq $1024, %rdx\n"           // read up to 1024 bytes
-             "    movq $0, %rax\n"              // Linux read syscall (0)
+             "    movq $1024, %rdx\n"
+             "    movq $0, %rax\n"
              "    syscall\n";
 #endif
     finalAsm << "    testq %rax, %rax\n"
@@ -553,8 +551,8 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
     finalAsm << "_atoi:\n"
              "    pushq %rbp\n"
              "    movq %rsp, %rbp\n"
-             "    movq $0, %rax\n"        // result = 0
-             "    movq %rdi, %rcx\n"      // pointer to input string
+             "    movq $0, %rax\n"
+             "    movq %rdi, %rcx\n"
              "atoi_loop:\n"
              "    movzbq (%rcx), %rdx\n"
              "    cmpb $0, %dl\n"
@@ -593,13 +591,13 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
 #if defined(__APPLE__) || defined(__MACH__)
     finalAsm << "\n.globl _exit\n";
     finalAsm << "_exit:\n"
-             "    movq $0x2000001, %rax\n"      // macOS exit syscall
+             "    movq $0x2000001, %rax\n"
              "    movq $0, %rdi\n"
              "    syscall\n";
 #else
     finalAsm << "\n.globl _exit\n";
     finalAsm << "_exit:\n"
-             "    movq $60, %rax\n"             // Linux exit syscall
+             "    movq $60, %rax\n"
              "    movq $0, %rdi\n"
              "    syscall\n";
 #endif
@@ -638,40 +636,64 @@ void execBinary(const std::string &binary) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: ./compile <source_file> <output_file> [exec]\n";
+    if (argc < 2) {
+        std::cerr << "Usage: ./compile <source_file> [-o output_file] [exec]\n";
         return 1;
     }
+
     std::string source;
-    // If the source file argument is "-", read from standard input.
-    if (std::string(argv[1]) == "-") {
+    std::string sourceFile = argv[1];
+
+    // Read from standard input if source file is "-"
+    if (sourceFile == "-") {
         std::stringstream buffer;
         buffer << std::cin.rdbuf();
         source = buffer.str();
     } else {
-        std::ifstream ifs(argv[1]);
+        std::ifstream ifs(sourceFile);
         if (!ifs) {
-            std::cerr << "Failed to open source file: " << argv[1] << "\n";
+            std::cerr << "Failed to open source file: " << sourceFile << "\n";
             return 1;
         }
         std::stringstream buffer;
         buffer << ifs.rdbuf();
         source = buffer.str();
     }
-    Lexer lexer(source, argv[1]);
+
+    // Parse command-line arguments for output file and exec flag.
+    std::string outputFile = "a.out";
+    bool execFlag = false;
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-o") {
+            if (i + 1 < argc) {
+                outputFile = argv[i + 1];
+                i++; // Skip next argument as it is the output file name.
+            } else {
+                std::cerr << "Error: -o flag provided but no output file name given\n";
+                return 1;
+            }
+        } else if (arg == "exec") {
+            execFlag = true;
+        } else {
+            // Unknown flags are ignored.
+        }
+    }
+
+    Lexer lexer(source, sourceFile);
     std::vector<Token> tokens = lexer.tokenize();
     Parser parser(tokens);
     ASTNode root = parser.parse();
     CodeGenerator codeGen(root);
     try {
-        codeGen.generateBinary(argv[2]);
+        codeGen.generateBinary(outputFile);
     } catch (const std::exception &ex) {
         std::cerr << "compile: \033[1;31merror:\033[0;1m " << ex.what() << "\033[0m\n";
         return 1;
     }
-    if (argc >= 4 && std::string(argv[3]) == "exec") {
-        std::cout << "[Executor] Running generated binary: " << argv[2] << "\n";
-        execBinary(argv[2]);
+    if (execFlag) {
+        std::cout << "[Executor] Running generated binary: " << outputFile << "\n";
+        execBinary(outputFile);
     }
     return 0;
 }
