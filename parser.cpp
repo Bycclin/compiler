@@ -1,3 +1,4 @@
+// parser.cpp
 #include "parser.h"
 #include <stdexcept>
 #include <iostream>
@@ -215,7 +216,8 @@ ASTNode Parser::parseWhile() {
         tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
          throw std::runtime_error(formatError("Expected ':' after while condition", (position < tokens.size() ? tokens[position] : tokens.back())));
     ++position; // consume ':'
-    ASTNode body = parseStatement();
+    // Parse a suite (block) of statements for the while body.
+    ASTNode body = parseSuite();
     return ASTNode("While", "", { condition, body });
 }
 
@@ -339,6 +341,15 @@ ASTNode Parser::parseArgument() {
              tokens[position+1].type == TokenType::PUNCTUATION && tokens[position+1].value == "(")) {
         return parseFunctionCall();
     }
+    
+    // Check for boolean literals before processing as a generic identifier.
+    if (tokens[position].type == TokenType::IDENTIFIER &&
+       (tokens[position].value == "True" || tokens[position].value == "False")) {
+        ASTNode boolNode("Boolean", tokens[position].value);
+        ++position;
+        return boolNode;
+    }
+    
     // If the token is an identifier not followed by an operator, return an Identifier node.
     if (tokens[position].type == TokenType::IDENTIFIER) {
         if (position + 1 < tokens.size() && tokens[position+1].type == TokenType::OPERATOR) {
@@ -352,13 +363,6 @@ ASTNode Parser::parseArgument() {
     
     if (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "[")
         return parseListLiteral();
-    
-    if (tokens[position].type == TokenType::IDENTIFIER &&
-       (tokens[position].value == "True" || tokens[position].value == "False")) {
-        ASTNode boolNode("Boolean", tokens[position].value);
-        ++position;
-        return boolNode;
-    }
     
     std::string argumentValue;
     int bracketDepth = 0;
@@ -565,4 +569,53 @@ ASTNode Parser::parseLambda() {
     ASTNode expr = parseArgument();
     ASTNode paramsNode("Parameters", parameters);
     return ASTNode("Lambda", "", { paramsNode, expr });
+}
+
+//------------------------------------------------------------
+// New: Implementation of parseSuite()
+// This function parses a block (suite) of statements.
+// It supports both a single statement (possibly with semicolon-separated additional statements)
+// or a block enclosed in braces.
+//------------------------------------------------------------
+ASTNode Parser::parseSuite() {
+    std::vector<ASTNode> statements;
+    // If the suite is enclosed in braces, parse multiple statements until the closing brace.
+    if (position < tokens.size() &&
+        tokens[position].type == TokenType::PUNCTUATION &&
+        tokens[position].value == "{") {
+        ++position; // consume '{'
+        while (position < tokens.size() &&
+               !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "}")) {
+            statements.push_back(parseStatement());
+            // Optionally consume a semicolon between statements.
+            if (position < tokens.size() &&
+                tokens[position].type == TokenType::PUNCTUATION &&
+                tokens[position].value == ";") {
+                ++position;
+            }
+        }
+        if (position < tokens.size() &&
+            tokens[position].type == TokenType::PUNCTUATION &&
+            tokens[position].value == "}") {
+            ++position; // consume '}'
+        } else {
+            throw std::runtime_error("Expected '}' to close block");
+        }
+    } else {
+        // Otherwise, parse a single statement.
+        statements.push_back(parseStatement());
+        // Allow additional statements separated by semicolons.
+        while (position < tokens.size() &&
+               tokens[position].type == TokenType::PUNCTUATION &&
+               tokens[position].value == ";") {
+            ++position; // consume ';'
+            if (position < tokens.size() && tokens[position].type != TokenType::END) {
+                statements.push_back(parseStatement());
+            }
+        }
+    }
+    if (statements.size() == 1) {
+        return statements[0];
+    }
+    return ASTNode("Suite", "", statements);
 }
