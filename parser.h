@@ -27,20 +27,21 @@ private:
     
     ASTNode parseProgram();
     ASTNode parseStatement();
-    
-    // New control flow constructs
+    ASTNode parseSuite(); // New: Parse a block (suite) of statements.
+
+    // Control flow constructs.
     ASTNode parseIf();
     ASTNode parseWhile();
-    ASTNode parseFor();       // New: For-loop statement
-    ASTNode parseWith();      // New: With statement support
+    ASTNode parseFor();       // For-loop statement.
+    ASTNode parseWith();      // With statement support.
 
     ASTNode parseImport();
     ASTNode parseFromImport();
     ASTNode parseFunctionCall();
     ASTNode parseArgument();
     
-    // New literal parsing
-    ASTNode parseListLiteral();   // New: List literal support
+    // Literal parsing.
+    ASTNode parseListLiteral();   // List literal support.
     
     ASTNode parseFunctionDef();
     ASTNode parseReturn();
@@ -52,7 +53,7 @@ private:
     void skipUnsupportedStatement();
     std::string currentTokenLocation() const;
 
-    // New helper functions to provide enhanced error messages.
+    // Helper functions for enhanced error messages.
     std::string getLineSnippet(const Token &tk);
     std::string formatError(const std::string &msg, const Token &tk);
 };
