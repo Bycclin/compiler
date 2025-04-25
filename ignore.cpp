@@ -17,6 +17,8 @@
 #include "lexer.h"
 #include "parser.h"
 #include <exception>
+#include <chrono>   // For debug timing
+
 #ifdef __APPLE__
 #include <unistd.h>  // for read on macOS and exec functions
 #else
@@ -39,7 +41,9 @@ public:
         definedNames.insert("exec");
     }
 
-    void generateBinary(const std::string &outputFile);
+    // Generates the binary executable (or prints assembly if requested)
+    void generateBinary(const std::string &outputFile, bool printAssembly);
+    // Returns the complete assembly code as a string.
     std::string generateAssembly(const ASTNode &node, int indentLevel = 1, bool inFunction = false, const std::string &brkLabel = "");
 
 private:
@@ -72,8 +76,8 @@ private:
         if (token.empty())
             return token;
         if (std::isalpha(token.front())) {
-            if (token.size() >= 2 && (token[1]=='\"' || token[1]=='\'')) {
-                std::string content = token.substr(2, token.size()-3);
+            if (token.size() >= 2 && (token[1] == '\"' || token[1] == '\'')) {
+                std::string content = token.substr(2, token.size() - 3);
                 return inPrintContext ? content : ("\"" + content + "\"");
             }
         }
@@ -173,18 +177,18 @@ double CodeGenerator::parseTerm(const char *&s) {
 
 double CodeGenerator::parseFactor(const char *&s) {
     skipWhitespace(s);
-    if (*s=='(') {
+    if (*s == '(') {
         s++;
         double val = parseExpression(s);
         skipWhitespace(s);
-        if (*s!=')')
+        if (*s != ')')
             throw std::runtime_error("Missing closing parenthesis");
         s++;
         return val;
     } else {
         char *end;
         double val = strtod(s, &end);
-        if (s==end)
+        if (s == end)
             throw std::runtime_error("Invalid number");
         s = end;
         return val;
@@ -199,27 +203,27 @@ void CodeGenerator::skipWhitespace(const char *&s) {
 std::string CodeGenerator::computeAscii(const std::string &input) {
     std::string output;
     size_t i = 0;
-    while(i<input.size()){
+    while (i < input.size()) {
         unsigned char c = input[i];
-        if(c<128){
+        if (c < 128) {
             output.push_back(c);
             i++;
         } else {
             uint32_t codepoint = 0;
             int numBytes = 0;
-            if((c & 0xE0)==0xC0){ codepoint = c & 0x1F; numBytes=2; }
-            else if((c & 0xF0)==0xE0){ codepoint = c & 0x0F; numBytes=3; }
-            else if((c & 0xF8)==0xF0){ codepoint = c & 0x07; numBytes=4; }
+            if ((c & 0xE0) == 0xC0) { codepoint = c & 0x1F; numBytes = 2; }
+            else if ((c & 0xF0) == 0xE0) { codepoint = c & 0x0F; numBytes = 3; }
+            else if ((c & 0xF8) == 0xF0) { codepoint = c & 0x07; numBytes = 4; }
             else { output += "?"; i++; continue; }
-            if(i+numBytes>input.size()) break;
-            for(int j=1;j<numBytes;j++){
+            if (i + numBytes > input.size()) break;
+            for (int j = 1; j < numBytes; j++) {
                 unsigned char nc = input[i+j];
-                if((nc & 0xC0) != 0x80){ codepoint = '?'; break; }
+                if ((nc & 0xC0) != 0x80) { codepoint = '?'; break; }
                 codepoint = (codepoint << 6) | (nc & 0x3F);
             }
             i += numBytes;
             std::ostringstream oss;
-            if(codepoint<=0xFFFF)
+            if (codepoint <= 0xFFFF)
                 oss << "\\u" << std::setw(4) << std::setfill('0') << std::hex << codepoint;
             else
                 oss << "\\U" << std::setw(8) << std::setfill('0') << std::hex << codepoint;
@@ -232,18 +236,18 @@ std::string CodeGenerator::computeAscii(const std::string &input) {
 bool CodeGenerator::tryEvaluateList(const std::string &expr, std::vector<long long> &result) {
     result.clear();
     std::string s = expr;
-    if(s.empty() || s.front()!='[' || s.back()!=']')
+    if (s.empty() || s.front() != '[' || s.back() != ']')
         return false;
-    s = s.substr(1, s.size()-2);
+    s = s.substr(1, s.size() - 2);
     std::istringstream iss(s);
     std::string token;
-    while(std::getline(iss, token, ',')){
-        token.erase(token.begin(), std::find_if(token.begin(), token.end(), [](int ch){ return !std::isspace(ch); }));
-        token.erase(std::find_if(token.rbegin(), token.rend(), [](int ch){ return !std::isspace(ch); }).base(), token.end());
+    while (std::getline(iss, token, ',')) {
+        token.erase(token.begin(), std::find_if(token.begin(), token.end(), [](int ch) { return !std::isspace(ch); }));
+        token.erase(std::find_if(token.rbegin(), token.rend(), [](int ch) { return !std::isspace(ch); }).base(), token.end());
         try {
             long long num = std::stoll(token);
             result.push_back(num);
-        } catch(...) {
+        } catch (...) {
             return false;
         }
     }
@@ -251,28 +255,28 @@ bool CodeGenerator::tryEvaluateList(const std::string &expr, std::vector<long lo
 }
 
 std::string CodeGenerator::processFString(const std::string &fstr) {
-    if(fstr.size()<3)
+    if (fstr.size() < 3)
         return fstr;
     char quote = fstr[1];
-    if(quote!='"' && quote!='\'')
+    if (quote != '"' && quote != '\'')
         return fstr;
-    std::string inner = fstr.substr(2, fstr.size()-3);
+    std::string inner = fstr.substr(2, fstr.size() - 3);
     std::string output;
     size_t pos = 0;
-    while(pos<inner.size()){
-        if(inner[pos]=='{'){
+    while (pos < inner.size()) {
+        if (inner[pos] == '{') {
             size_t endPos = inner.find('}', pos);
-            if(endPos==std::string::npos){
+            if (endPos == std::string::npos) {
                 output += inner.substr(pos);
                 break;
             }
-            std::string expr = inner.substr(pos+1, endPos-pos-1);
+            std::string expr = inner.substr(pos + 1, endPos - pos - 1);
             std::string evaluated;
-            if(tryEvaluateArithmetic(expr, evaluated))
+            if (tryEvaluateArithmetic(expr, evaluated))
                 output += evaluated;
             else
                 output += "{" + expr + "}";
-            pos = endPos+1;
+            pos = endPos + 1;
         } else {
             output.push_back(inner[pos]);
             pos++;
@@ -286,27 +290,27 @@ std::string CodeGenerator::findPythonFolder() {
 }
 
 void CodeGenerator::compileModule(const std::string &moduleName) {
-    if(moduleName=="sys")
+    if (moduleName == "sys")
         return;
-    if(compiledModules.find(moduleName)!=compiledModules.end())
+    if (compiledModules.find(moduleName) != compiledModules.end())
         return;
     compiledModules.insert(moduleName);
     std::vector<std::string> sysPaths = getSysPaths();
     std::string moduleFilePath;
-    for(const std::string &dir: sysPaths){
+    for (const std::string &dir : sysPaths) {
         std::string path = dir + "/" + moduleName + ".py";
         std::ifstream moduleFile(path);
-        if(moduleFile.good()){
+        if (moduleFile.good()) {
             moduleFilePath = path;
             break;
         }
     }
-    if(moduleFilePath.empty()){
+    if (moduleFilePath.empty()) {
         std::cerr << "[Warning] Module " << moduleName << " not found in sys.path.\n";
         return;
     }
     std::ifstream ifs(moduleFilePath);
-    if(!ifs)
+    if (!ifs)
         throw std::runtime_error("Failed to open module file: " + moduleFilePath);
     std::stringstream buffer;
     buffer << ifs.rdbuf();
@@ -329,18 +333,18 @@ std::vector<std::string> CodeGenerator::getSysPaths() {
 }
 
 void CodeGenerator::generateSysPathList() {
-    if(sysPathListGenerated)
+    if (sysPathListGenerated)
         return;
     std::vector<std::string> paths = getSysPaths();
     std::vector<std::string> itemLabels;
-    for(size_t i=0;i<paths.size();i++){
+    for (size_t i = 0; i < paths.size(); i++) {
         std::string label = generateLabel("sys_path_item");
         dataSection += label + ": .asciz \"" + escapeString(paths[i]) + "\"\n";
         itemLabels.push_back(label);
     }
     sysPathListLabel = "sys_path_list";
     std::string listDef = sysPathListLabel + ":\n";
-    for(const auto &lbl: itemLabels){
+    for (const auto &lbl : itemLabels) {
         listDef += "    .quad " + lbl + "\n";
     }
     listDef += "    .quad 0\n";
@@ -352,13 +356,13 @@ void CodeGenerator::generateSysPathList() {
 std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel, bool inFunction, const std::string &brkLabel) {
     std::stringstream ss;
     std::string indent(indentLevel * 4, ' ');
-    if(node.type=="Program"){
-        for(const auto &child: node.children)
+    if (node.type == "Program") {
+        for (const auto &child : node.children)
             ss << generateAssembly(child, indentLevel, false, brkLabel);
     }
-    else if(node.type=="Assignment"){
+    else if (node.type == "Assignment") {
         std::string rhsCode = generateAssembly(node.children[0], indentLevel, inFunction, brkLabel);
-        if(variableLabels.find(node.value)==variableLabels.end()){
+        if (variableLabels.find(node.value) == variableLabels.end()) {
             std::string varLabel = generateLabel("var_" + node.value);
             variableLabels[node.value] = varLabel;
             dataSection += varLabel + ": .quad 0\n";
@@ -369,69 +373,69 @@ std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel
         ss << getAddress("x0", variableLabels[node.value]);
         ss << indent << "ldr x0, [x0]\n";
     }
-    else if(node.type=="Identifier"){
-        if(variableLabels.find(node.value)==variableLabels.end())
+    else if (node.type == "Identifier") {
+        if (variableLabels.find(node.value) == variableLabels.end())
             throw std::runtime_error("Name \"" + node.value + "\" is not defined.");
         ss << getAddress("x0", variableLabels[node.value]);
         ss << indent << "ldr x0, [x0]\n";
     }
-    else if(node.type=="Boolean"){
-        if(node.value=="True")
+    else if (node.type == "Boolean") {
+        if (node.value == "True")
             ss << indent << "mov x0, #1\n";
         else
             ss << indent << "mov x0, #0\n";
     }
-    else if(node.type=="While" || node.type=="while"){
-        if(node.children.size()<2)
+    else if (node.type == "While" || node.type == "while") {
+        if (node.children.size() < 2)
             return indent + "mov x0, #0\n";
         std::string condLabel = generateLabel("while_cond");
         std::string endLabel = generateLabel("while_end");
         ss << condLabel << ":\n";
-        ss << generateAssembly(node.children[0], indentLevel+1, inFunction, brkLabel);
+        ss << generateAssembly(node.children[0], indentLevel + 1, inFunction, brkLabel);
         ss << indent << "cmp x0, #0\n";
         ss << indent << "beq " << endLabel << "\n";
-        ss << generateAssembly(node.children[1], indentLevel+1, inFunction, endLabel);
+        ss << generateAssembly(node.children[1], indentLevel + 1, inFunction, endLabel);
         ss << indent << "b " << condLabel << "\n";
         ss << endLabel << ":\n";
         ss << indent << "mov x0, #0\n";
     }
-    else if(node.type=="If"){
-        if(node.children.size()==2){
+    else if (node.type == "If") {
+        if (node.children.size() == 2) {
             std::string falseLabel = generateLabel("if_false");
             std::string endLabel = generateLabel("if_end");
-            ss << generateAssembly(node.children[0], indentLevel+1, inFunction, brkLabel);
+            ss << generateAssembly(node.children[0], indentLevel + 1, inFunction, brkLabel);
             ss << indent << "cmp x0, #0\n";
             ss << indent << "beq " << falseLabel << "\n";
-            ss << generateAssembly(node.children[1], indentLevel+1, inFunction, brkLabel);
+            ss << generateAssembly(node.children[1], indentLevel + 1, inFunction, brkLabel);
             ss << indent << "b " << endLabel << "\n";
             ss << falseLabel << ":\n";
             ss << endLabel << ":\n";
             ss << indent << "mov x0, #0\n";
         }
-        else if(node.children.size()==3){
+        else if (node.children.size() == 3) {
             std::string falseLabel = generateLabel("if_false");
             std::string endLabel = generateLabel("if_end");
-            ss << generateAssembly(node.children[0], indentLevel+1, inFunction, brkLabel);
+            ss << generateAssembly(node.children[0], indentLevel + 1, inFunction, brkLabel);
             ss << indent << "cmp x0, #0\n";
             ss << indent << "beq " << falseLabel << "\n";
-            ss << generateAssembly(node.children[1], indentLevel+1, inFunction, brkLabel);
+            ss << generateAssembly(node.children[1], indentLevel + 1, inFunction, brkLabel);
             ss << indent << "b " << endLabel << "\n";
             ss << falseLabel << ":\n";
-            ss << generateAssembly(node.children[2], indentLevel+1, inFunction, brkLabel);
+            ss << generateAssembly(node.children[2], indentLevel + 1, inFunction, brkLabel);
             ss << endLabel << ":\n";
             ss << indent << "mov x0, #0\n";
         } else {
             ss << indent << "mov x0, #0\n";
         }
     }
-    else if(node.type=="Unsupported" && node.value=="break"){
-        if(!brkLabel.empty())
+    else if (node.type == "Unsupported" && node.value == "break") {
+        if (!brkLabel.empty())
             ss << indent << "b " << brkLabel << "\n";
         else
             ss << indent << "mov x0, #0\n";
     }
-    else if(node.type=="FunctionCall" && node.value=="input"){
-        if(!node.children.empty()){
+    else if (node.type == "FunctionCall" && node.value == "input") {
+        if (!node.children.empty()) {
             std::string prompt = processLiteral(node.children[0].value, true);
             std::string label = generateLabel("prompt");
             dataSection += label + ": .asciz \"" + escapeString(prompt) + "\"\n";
@@ -440,17 +444,17 @@ std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel
         }
         ss << indent << "bl _input\n";
     }
-    else if(node.type=="FunctionCall" && node.value=="print"){
+    else if (node.type == "FunctionCall" && node.value == "print") {
         std::vector<ASTNode> positionalArgs;
         std::string endValue = "\n";
-        for(const auto &child: node.children){
-            if(child.type=="KeywordArgument" && child.value=="end")
+        for (const auto &child : node.children) {
+            if (child.type == "KeywordArgument" && child.value == "end")
                 endValue = processLiteral(child.children[0].value, true);
             else
                 positionalArgs.push_back(child);
         }
-        for(const auto &arg: positionalArgs){
-            if(!arg.value.empty() && (arg.value.front()=='"' || arg.value.front()=='\'')){
+        for (const auto &arg : positionalArgs) {
+            if (!arg.value.empty() && (arg.value.front() == '"' || arg.value.front() == '\'')) {
                 std::string text = processLiteral(arg.value, true);
                 std::string label = generateLabel("print_arg");
                 dataSection += label + ": .asciz \"" + escapeString(text) + "\"\n";
@@ -467,13 +471,13 @@ std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel
         ss << indent << "bl _print_string\n";
         ss << indent << "mov x0, #0\n";
     }
-    else if(node.type=="FunctionCall" && node.value=="int"){
-        if(node.children.empty())
+    else if (node.type == "FunctionCall" && node.value == "int") {
+        if (node.children.empty())
             throw std::runtime_error("int() requires an argument.");
         ss << generateAssembly(node.children[0], indentLevel, inFunction, brkLabel);
         ss << indent << "bl _atoi\n";
     }
-    else if(node.type=="FunctionCall"){
+    else if (node.type == "FunctionCall") {
         throw std::runtime_error("Function \"" + node.value + "\" is not defined.");
     }
     else {
@@ -482,91 +486,100 @@ std::string CodeGenerator::generateAssembly(const ASTNode &node, int indentLevel
     return ss.str();
 }
 
-void CodeGenerator::generateBinary(const std::string &outputFile) {
+void CodeGenerator::generateBinary(const std::string &outputFile, bool printAssembly) {
     std::cout << "[CodeGenerator] Generating binary to: " << outputFile << "\n";
+    auto t0 = std::chrono::steady_clock::now();
     std::string mainCode = generateAssembly(astRoot);
-    std::string textCode = mainCode;
-    std::string preText = "    // Debug stub (if needed)\n";
-    textCode = preText + textCode;
+    auto t1 = std::chrono::steady_clock::now();
+    std::chrono::duration<double> genAsmTime = t1 - t0;
+    std::cout << "[DEBUG] Assembly generation took: " << genAsmTime.count() << " seconds.\n";
     
-    std::stringstream finalAsm;
-    finalAsm << ".section __DATA,__const\n";
-    finalAsm << gotSection; // (For our internal symbols, gotSection is empty now.)
-    finalAsm << ".section __DATA,__data\n";
-    finalAsm << "_input_buffer: .space 256\n";
-    finalAsm << dataSection << "\n";
-    finalAsm << ".section __TEXT,__text,regular,pure_instructions\n";
-    finalAsm << ".globl _start\n";
-    finalAsm << "_start:\n" << textCode << "\n";
-    finalAsm << functionSection << "\n";
-    finalAsm << "    mov x0, #0\n"
-             "    bl _exit\n";
+    // Build final assembly string using a large preallocated buffer
+    std::string finalAsm;
+    finalAsm.reserve(1000000);
+    finalAsm.append(".section __DATA,__const\n");
+    finalAsm.append(gotSection);
+    finalAsm.append(".section __DATA,__data\n");
+    finalAsm.append("_input_buffer: .space 256\n");
+    finalAsm.append(dataSection);
+    finalAsm.append("\n.section __TEXT,__text,regular,pure_instructions\n");
+    finalAsm.append(".globl _start\n");
+    finalAsm.append("_start:\n");
+    finalAsm.append("    // Debug stub (if needed)\n");
+    finalAsm.append(mainCode);
+    finalAsm.append("\n");
+    finalAsm.append(functionSection);
+    finalAsm.append("\n    mov x0, #0\n    bl _exit\n");
     
-    finalAsm << "\n.globl _print_string\n";
-    finalAsm << "_print_string:\n"
-             "    stp x29, x30, [sp, #-16]!\n"
-             "    mov x29, sp\n"
-             "    mov x4, x0\n"
-             "    mov x1, x0\n"
-             "    mov x2, #0\n"
-             ".find_length_arm:\n"
-             "    ldrb w3, [x1], #1\n"
-             "    cbz w3, .length_found\n"
-             "    add x2, x2, #1\n"
-             "    b .find_length_arm\n"
-             ".length_found:\n"
-             "    mov x1, x4\n"
-             "    mov x0, #1\n"
-             "    bl _write\n"
-             "    ldp x29, x30, [sp], #16\n"
-             "    ret\n";
+    finalAsm.append("\n.globl _print_string\n");
+    finalAsm.append("_print_string:\n"
+                     "    stp x29, x30, [sp, #-16]!\n"
+                     "    mov x29, sp\n"
+                     "    mov x4, x0\n"
+                     "    mov x1, x0\n"
+                     "    mov x2, #0\n"
+                     ".find_length_arm:\n"
+                     "    ldrb w3, [x1], #1\n"
+                     "    cbz w3, .length_found\n"
+                     "    add x2, x2, #1\n"
+                     "    b .find_length_arm\n"
+                     ".length_found:\n"
+                     "    mov x1, x4\n"
+                     "    mov x0, #1\n"
+                     "    bl _write\n"
+                     "    ldp x29, x30, [sp], #16\n"
+                     "    ret\n");
     
-    finalAsm << "\n.globl _input\n";
-    finalAsm << "_input:\n"
-             "    stp x29, x30, [sp, #-16]!\n"
-             "    mov x29, sp\n"
-             << getAddress("x1", "_input_buffer")
-             << "    mov x2, #256\n"
-             "    mov x0, #0\n"
-             "    bl _read\n"
-             "    ldp x29, x30, [sp], #16\n"
-             "    ret\n";
+    finalAsm.append("\n.globl _input\n");
+    finalAsm.append("_input:\n"
+                     "    stp x29, x30, [sp, #-16]!\n"
+                     "    mov x29, sp\n");
+    finalAsm.append(getAddress("x1", "_input_buffer"));
+    finalAsm.append("    mov x2, #256\n"
+                     "    mov x0, #0\n"
+                     "    bl _read\n"
+                     "    ldp x29, x30, [sp], #16\n"
+                     "    ret\n");
     
-    finalAsm << "\n.globl _atoi\n";
-    finalAsm << "_atoi:\n"
-             "    stp x29, x30, [sp, #-16]!\n"
-             "    mov x29, sp\n"
-             "    mov x1, x0\n"
-             "    mov x0, #0\n"
-             "    mov x2, #10\n"
-             "atoi_loop:\n"
-             "    ldrb w3, [x1], #1\n"
-             "    cmp w3, #0\n"
-             "    beq atoi_done\n"
-             "    sub w3, w3, #48\n"
-             "    mul x0, x0, x2\n"
-             "    add x0, x0, w3, uxtw\n"
-             "    b atoi_loop\n"
-             "atoi_done:\n"
-             "    ldp x29, x30, [sp], #16\n"
-             "    ret\n";
+    finalAsm.append("\n.globl _atoi\n");
+    finalAsm.append("_atoi:\n"
+                     "    stp x29, x30, [sp, #-16]!\n"
+                     "    mov x29, sp\n"
+                     "    mov x1, x0\n"
+                     "    mov x0, #0\n"
+                     "    mov x2, #10\n"
+                     "atoi_loop:\n"
+                     "    ldrb w3, [x1], #1\n"
+                     "    cmp w3, #0\n"
+                     "    beq atoi_done\n"
+                     "    sub w3, w3, #48\n"
+                     "    mul x0, x0, x2\n"
+                     "    add x0, x0, w3, uxtw\n"
+                     "    b atoi_loop\n"
+                     "atoi_done:\n"
+                     "    ldp x29, x30, [sp], #16\n"
+                     "    ret\n");
     
-    finalAsm << "\n.globl _exit\n";
-    finalAsm << "_exit:\n"
-             "    mov x0, #0\n";
+    finalAsm.append("\n.globl _exit\n");
+    finalAsm.append("_exit:\n"
 #ifdef __APPLE__
-    finalAsm << "    mov x16, #1\n"
-             "    svc #0\n";
+                     "    mov x0, #0\n    mov x16, #1\n    svc #0\n");
 #else
-    finalAsm << "    svc #0\n";
+                     "    mov x0, #0\n    svc #0\n");
 #endif
-    
-    std::string assemblyCode = finalAsm.str();
+
+    // If the flag is set, print the final assembly and exit.
+    if (printAssembly) {
+        std::cout << finalAsm;
+        std::cout << "[DEBUG] Assembly output printed. Exiting without linking.\n";
+        return;
+    }
+
     std::string assemblyFile = outputFile + ".s";
     std::ofstream asm_ofs(assemblyFile);
     if (!asm_ofs)
         throw std::runtime_error("Failed to open assembly file for writing.");
-    asm_ofs << assemblyCode;
+    asm_ofs << finalAsm;
     asm_ofs.close();
 #ifdef __APPLE__
     std::string compileCommand = "clang " + assemblyFile + " -o " + outputFile + " -e _start -no-integrated-as -lc -fPIE";
@@ -574,8 +587,13 @@ void CodeGenerator::generateBinary(const std::string &outputFile) {
     std::string compileCommand = "clang " + assemblyFile + " -o " + outputFile + " -e _start -no-integrated-as -lc";
 #endif
     std::cout << "[Compiler] Running: " << compileCommand << "\n";
+    auto t2 = std::chrono::steady_clock::now();
     if (std::system(compileCommand.c_str()) != 0)
         throw std::runtime_error("Compilation (clang linking) failed.");
+    auto t3 = std::chrono::steady_clock::now();
+    std::chrono::duration<double> compileTime = t3 - t2;
+    std::cout << "[DEBUG] Linking took: " << compileTime.count() << " seconds.\n";
+    
     std::remove(assemblyFile.c_str());
     std::cout << "[CodeGenerator] Binary executable generated: " << outputFile << "\n";
 }
@@ -596,15 +614,23 @@ void execBinary(const std::string &binary) {
 }
 
 int main(int argc, char *argv[]) {
+    using clock = std::chrono::steady_clock;
+    auto overall_start = clock::now();
+
     if (argc < 2) {
-        std::cerr << "Usage: ./compile <source_files> [-o output_file] [exec]\n";
+        std::cerr << "Usage: ./compile <source_files> [-o output_file] [exec] [--print-asm]\n";
         return 1;
     }
     
-    // Gather source files until we encounter "-o" or "exec"
+    bool printAssembly = false; // New flag: if true, print assembly instead of linking.
+
+    // Gather source files until we encounter "-o", "exec", or "--print-asm"
     std::vector<std::string> sourceFiles;
     int argIndex = 1;
-    while (argIndex < argc && std::string(argv[argIndex]) != "-o" && std::string(argv[argIndex]) != "exec") {
+    while (argIndex < argc &&
+           std::string(argv[argIndex]) != "-o" &&
+           std::string(argv[argIndex]) != "exec" &&
+           std::string(argv[argIndex]) != "--print-asm") {
         sourceFiles.push_back(argv[argIndex]);
         argIndex++;
     }
@@ -615,6 +641,7 @@ int main(int argc, char *argv[]) {
     }
     
     // Combine all source files into one source string.
+    auto t0 = clock::now();
     std::string combinedSource;
     for (const auto &file : sourceFiles) {
         if (file == "-") {
@@ -632,6 +659,9 @@ int main(int argc, char *argv[]) {
             combinedSource += buffer.str() + "\n";
         }
     }
+    auto t1 = clock::now();
+    std::chrono::duration<double> readTime = t1 - t0;
+    std::cout << "[DEBUG] Reading source files took: " << readTime.count() << " seconds.\n";
     
     // Process remaining command-line arguments.
     std::string outputFile = "a.out";
@@ -649,6 +679,9 @@ int main(int argc, char *argv[]) {
         } else if (arg == "exec") {
             execFlag = true;
             argIndex++;
+        } else if (arg == "--print-asm") {
+            printAssembly = true;
+            argIndex++;
         } else {
             argIndex++;
         }
@@ -656,17 +689,29 @@ int main(int argc, char *argv[]) {
     
     // Use the first source file's name for error messages.
     std::string sourceFilename = sourceFiles.empty() ? "stdin" : sourceFiles[0];
-    
+
+    auto t2 = clock::now();
     Lexer lexer(combinedSource, sourceFilename);
     std::vector<Token> tokens = lexer.tokenize();
+    auto t3 = clock::now();
+    std::chrono::duration<double> tokenizeTime = t3 - t2;
+    std::cout << "[DEBUG] Tokenization took: " << tokenizeTime.count() << " seconds.\n";
+    
+    auto t4 = clock::now();
     Parser parser(tokens);
     ASTNode root = parser.parse();
+    auto t5 = clock::now();
+    std::chrono::duration<double> parseTime = t5 - t4;
+    std::cout << "[DEBUG] Parsing took: " << parseTime.count() << " seconds.\n";
+    
     CodeGenerator codeGen(root);
+    codeGen.generateBinary(outputFile, printAssembly);
     
-    // Generate binary.
-    codeGen.generateBinary(outputFile);
+    auto overall_end = clock::now();
+    std::chrono::duration<double> overallTime = overall_end - overall_start;
+    std::cout << "[DEBUG] Total compilation time: " << overallTime.count() << " seconds.\n";
     
-    if (execFlag) {
+    if (execFlag && !printAssembly) {
         std::cout << "[Executor] Running generated binary: " << outputFile << "\n";
         execBinary(outputFile);
     }
