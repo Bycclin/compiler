@@ -3,7 +3,7 @@
 
 #include <string>
 #include <vector>
-#include <iostream>
+#include <iosfwd>  // Use forward declaration for I/O streams instead of <iostream>
 
 enum class TokenType {
     KEYWORD,
@@ -22,7 +22,7 @@ struct Token {
     std::string value;
     int line;
     int column;
-    std::string filename; // New field for filename
+    std::string filename; // Field for filename
 
     Token(TokenType type, const std::string& value, int line = 0, int column = 0, const std::string& filename = "")
         : type(type), value(value), line(line), column(column), filename(filename) {}
@@ -55,7 +55,7 @@ private:
     bool isPunctuation(char current);
     Token handlePunctuation();
 
-    // New helper to get the content of the current line for traceback purposes.
+    // Helper to get the content of the current line for error messages.
     std::string getLineSnippet(int lineNumber);
 };
 
