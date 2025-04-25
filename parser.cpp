@@ -1,4 +1,3 @@
-// parser.cpp
 #include "parser.h"
 #include <stdexcept>
 #include <iostream>
@@ -42,7 +41,7 @@ std::string Parser::currentTokenLocation() const {
 }
 
 //------------------------------------------------------------
-// New helper functions for enhanced error messages in Parser.
+// Enhanced error message helpers.
 // They open the source file to extract the line where the error occurred.
 //------------------------------------------------------------
 std::string Parser::getLineSnippet(const Token &tk) {
@@ -109,11 +108,11 @@ void Parser::skipUnsupportedStatement() {
 // parseStatement: handles assignment, control flow, etc.
 //------------------------------------------------------------
 ASTNode Parser::parseStatement() {
-    // New: Handle 'with' statement
+    // Handle 'with' statement.
     if (tokens[position].type == TokenType::KEYWORD && tokens[position].value == "with")
         return parseWith();
 
-    // Handle 'for' loops (new)
+    // Handle 'for' loops.
     if (tokens[position].type == TokenType::KEYWORD && tokens[position].value == "for")
         return parseFor();
 
@@ -174,7 +173,7 @@ ASTNode Parser::parseStatement() {
 }
 
 //------------------------------------------------------------
-// parseIf, parseWhile, parseFor, parseWith, etc.
+// Parse control flow and compound statements
 //------------------------------------------------------------
 ASTNode Parser::parseIf() {
     Token ifToken = tokens[position];
@@ -328,8 +327,7 @@ ASTNode Parser::parseListLiteral() {
 }
 
 //------------------------------------------------------------
-// Modified parseArgument to properly handle expressions.
-// It now accumulates tokens until a colon (":") or other stop token is reached.
+// parseArgument: collects tokens until a stop token is encountered.
 //------------------------------------------------------------
 ASTNode Parser::parseArgument() {
     // If the next tokens indicate a function call, parse it as such.
@@ -342,7 +340,7 @@ ASTNode Parser::parseArgument() {
         return parseFunctionCall();
     }
     
-    // Check for boolean literals before processing as a generic identifier.
+    // Handle boolean literals.
     if (tokens[position].type == TokenType::IDENTIFIER &&
        (tokens[position].value == "True" || tokens[position].value == "False")) {
         ASTNode boolNode("Boolean", tokens[position].value);
@@ -350,10 +348,10 @@ ASTNode Parser::parseArgument() {
         return boolNode;
     }
     
-    // If the token is an identifier not followed by an operator, return an Identifier node.
+    // Return identifiers directly.
     if (tokens[position].type == TokenType::IDENTIFIER) {
         if (position + 1 < tokens.size() && tokens[position+1].type == TokenType::OPERATOR) {
-            // Fall through to accumulation loop.
+            // Fall through to accumulate tokens.
         } else {
             ASTNode idNode("Identifier", tokens[position].value);
             ++position;
@@ -367,7 +365,7 @@ ASTNode Parser::parseArgument() {
     std::string argumentValue;
     int bracketDepth = 0;
     int parenDepth = 0;
-    // Stop keywords to prevent over-consuming tokens from subsequent statements.
+    // Keywords that signal stopping.
     std::set<std::string> stopKeywords = {"def", "return", "yield", "class", "if", "while", "for", "with", "import", "from", "print", "break", "continue", "pass", "try", "except", "raise", "finally"};
     
     int tokenCount = 0;
@@ -376,15 +374,15 @@ ASTNode Parser::parseArgument() {
     while (position < tokens.size() && tokenCount < maxTokensPerArg) {
         const Token& tk = tokens[position];
         
-        // Stop if we see a punctuation ":" outside of any grouping.
+        // Stop if punctuation ":" is encountered and no grouping is active.
         if (tk.type == TokenType::PUNCTUATION && tk.value == ":" && parenDepth == 0 && bracketDepth == 0)
             break;
         
-        // Stop if the token is a KEYWORD that signals the start of a new statement, provided we've already consumed some tokens.
+        // Stop if a new statement starts.
         if (tk.type == TokenType::KEYWORD && stopKeywords.find(tk.value) != stopKeywords.end() && tokenCount > 0)
             break;
         
-        // Stop if we reach a closing parenthesis or comma outside of any grouping.
+        // Stop if closing punctuation encountered.
         if (tk.type == TokenType::PUNCTUATION && (tk.value == ")" || tk.value == ",") && parenDepth == 0 && bracketDepth == 0)
             break;
         
@@ -422,7 +420,7 @@ ASTNode Parser::parseArgument() {
 ASTNode Parser::parseFunctionCall() {
     if (tokens[position].type != TokenType::IDENTIFIER &&
         tokens[position].type != TokenType::KEYWORD &&
-        tokens[position].type != TokenType::BUILTIN)  // Accept BUILTIN tokens as well.
+        tokens[position].type != TokenType::BUILTIN)
          throw std::runtime_error(formatError("Expected function name", tokens[position]));
     std::string functionName = tokens[position].value;
     ++position;
@@ -572,10 +570,7 @@ ASTNode Parser::parseLambda() {
 }
 
 //------------------------------------------------------------
-// New: Implementation of parseSuite()
-// This function parses a block (suite) of statements.
-// It supports both a single statement (possibly with semicolon-separated additional statements)
-// or a block enclosed in braces.
+// parseSuite: parses a block (suite) of statements
 //------------------------------------------------------------
 ASTNode Parser::parseSuite() {
     std::vector<ASTNode> statements;
@@ -587,7 +582,7 @@ ASTNode Parser::parseSuite() {
         while (position < tokens.size() &&
                !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "}")) {
             statements.push_back(parseStatement());
-            // Optionally consume a semicolon between statements.
+            // Optionally consume semicolon between statements.
             if (position < tokens.size() &&
                 tokens[position].type == TokenType::PUNCTUATION &&
                 tokens[position].value == ";") {
@@ -604,7 +599,7 @@ ASTNode Parser::parseSuite() {
     } else {
         // Otherwise, parse a single statement.
         statements.push_back(parseStatement());
-        // Allow additional statements separated by semicolons.
+        // Allow semicolon-separated additional statements.
         while (position < tokens.size() &&
                tokens[position].type == TokenType::PUNCTUATION &&
                tokens[position].value == ";") {
