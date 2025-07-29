@@ -4,613 +4,350 @@
 #include <sstream>
 #include <set>
 #include <algorithm>
-#include <cctype>
-#include <fstream>
-
-//------------------------------------------------------------
-// ASTNode definitions
-//------------------------------------------------------------
-ASTNode::ASTNode() : type(""), value(""), children() {}
-
-ASTNode::ASTNode(const std::string& type, const std::vector<ASTNode>& children)
-    : type(type), value(""), children(children) {}
-
-ASTNode::ASTNode(const std::string& type, const std::string& value, const std::vector<ASTNode>& children)
-    : type(type), value(value), children(children) {}
-
+ASTNode::ASTNode() : type("Unknown"), value(""), token_ref(TokenType::UNKNOWN, "") {}
+ASTNode::ASTNode(const std::string& type, const Token& ref_tok, const std::vector<ASTNode>& children)
+    : type(type), value(""), children(children), token_ref(ref_tok) {}
+ASTNode::ASTNode(const std::string& type, const std::string& value, const Token& ref_tok, const std::vector<ASTNode>& children)
+    : type(type), value(value), children(children), token_ref(ref_tok) {}
 void ASTNode::print(size_t level) const {
-    std::string indent(level, '-');
-    std::cerr << indent << "Node(Type: " << type << ", Value: " << value << ")\n";
-    for (const auto &child : children)
-        child.print(level + 2);
-}
-
-//------------------------------------------------------------
-// Parser helper: current token location
-//------------------------------------------------------------
-std::string Parser::currentTokenLocation() const {
-    if (position < tokens.size()) {
-        const Token &tk = tokens[position];
-        std::string loc;
-        if (!tk.filename.empty())
-            loc = tk.filename + ":";
-        loc += std::to_string(tk.line) + ":" + std::to_string(tk.column);
-        return " at " + loc;
+    std::string indent(level * 2, ' ');
+    std::cerr << indent << "Node(Type: " << type;
+    if (!value.empty()) {
+        std::cerr << ", Value: \"" << value << "\"";
     }
-    return " at end of file";
-}
-
-//------------------------------------------------------------
-// Enhanced error message helpers.
-// They open the source file to extract the line where the error occurred.
-//------------------------------------------------------------
-std::string Parser::getLineSnippet(const Token &tk) {
-    std::ifstream file(tk.filename);
-    if (!file)
-        return "";
-    std::string lineStr;
-    for (int i = 1; i <= tk.line; i++) {
-        if(!std::getline(file, lineStr))
-            break;
+    if (token_ref.type != TokenType::UNKNOWN && token_ref.type != TokenType::END ) {
+         std::cerr << ", Line: " << token_ref.line << ", Col: " << token_ref.column;
     }
-    return lineStr;
+    if (!children.empty()) {
+        std::cerr << ", Children: [\n";
+        for (const auto &child : children) {
+            child.print(level + 1);
+        }
+        std::cerr << indent << "])\n";
+    } else {
+        std::cerr << ")\n";
+    }
 }
-
 std::string Parser::formatError(const std::string &msg, const Token &tk) {
-    std::string snippet = getLineSnippet(tk);
     std::ostringstream oss;
-    oss << tk.filename << ":" << tk.line << ":" << tk.column << ": error: " << msg << "\n";
-    oss << snippet << "\n";
-    oss << std::string(tk.column - 1, ' ') << "^\n";
+    oss << tk.filename << ":" << tk.line << ":" << tk.column << ": error: " << msg;
+    if (tk.type != TokenType::END && tk.type != TokenType::UNKNOWN) {
+        oss << " (found token " << tk.type << " '" << tk.value << "').\n";
+    } else {
+        oss << " (at " << tk.type << ").\n";
+    }
     return oss.str();
 }
-
-//------------------------------------------------------------
-// Parser constructor and core methods
-//------------------------------------------------------------
 Parser::Parser(const std::vector<Token>& tokens)
-    : tokens(tokens), position(0) {}
-
-Token Parser::getNextToken() {
-    if (position >= tokens.size())
-        return Token(TokenType::END, "");
-    return tokens[position++];
+    : tokens_list(tokens), position(0) {
+    if (tokens_list.empty()) {
+        Token dummyEnd(TokenType::END, "EOF_MARKER", 0,0,"<empty_input>");
+        tokens_list.push_back(dummyEnd);
+    }
 }
-
+Token Parser::currentToken() const {
+    if (position >= tokens_list.size()) {
+        if (!tokens_list.empty() && tokens_list.back().type == TokenType::END) return tokens_list.back();
+        return Token(TokenType::END, "EOF_OVERRUN_MARKER",
+                     !tokens_list.empty() ? tokens_list.back().line : 1,
+                     !tokens_list.empty() ? tokens_list.back().column : 1,
+                     !tokens_list.empty() ? tokens_list.back().filename : "unknown_ overrun");
+    }
+    return tokens_list[position];
+}
+Token Parser::consumeToken() {
+    Token current = currentToken();
+    if (current.type == TokenType::END && position >= tokens_list.size()-1) {
+        if (position < tokens_list.size()) position++;
+        return current;
+    }
+    if (position >= tokens_list.size()) {
+        throw std::runtime_error(formatError("Unexpected end of input, tried to consume past END token.", current));
+    }
+    return tokens_list[position++];
+}
+Token Parser::consumeToken(TokenType expectedType) {
+    Token tk = currentToken();
+    if (tk.type != expectedType) {
+        std::ostringstream oss;
+        oss << "Expected token type " << expectedType;
+        throw std::runtime_error(formatError(oss.str(), tk));
+    }
+    return consumeToken();
+}
+void Parser::expectToken(TokenType expectedType) {
+    Token tk = currentToken();
+    if (tk.type != expectedType) {
+        std::ostringstream oss;
+        oss << "Expected token type " << expectedType;
+        throw std::runtime_error(formatError(oss.str(), tk));
+    }
+    consumeToken();
+}
+void Parser::expectToken(TokenType expectedType, const std::string& value) {
+    Token tk = currentToken();
+    if (tk.type != expectedType || tk.value != value) {
+        std::ostringstream oss;
+        oss << "Expected token " << expectedType << " with value '" << value << "'";
+        throw std::runtime_error(formatError(oss.str(), tk));
+    }
+    consumeToken();
+}
+bool Parser::matchToken(TokenType type) {
+    if (currentToken().type == type) {
+        consumeToken();
+        return true;
+    }
+    return false;
+}
+bool Parser::matchToken(TokenType type, const std::string& value) {
+    if (currentToken().type == type && currentToken().value == value) {
+        consumeToken();
+        return true;
+    }
+    return false;
+}
 ASTNode Parser::parse() {
     return parseProgram();
 }
-
 ASTNode Parser::parseProgram() {
+    Token startToken = currentToken();
     std::vector<ASTNode> statements;
-    while (position < tokens.size() && tokens[position].type != TokenType::END) {
-        statements.push_back(parseStatement());
-    }
-    return ASTNode("Program", statements);
-}
-
-void Parser::skipUnsupportedStatement() {
-    while (position < tokens.size()) {
-        const Token& tk = tokens[position];
-        if ((tk.type == TokenType::KEYWORD &&
-            (tk.value == "import" || tk.value == "from" || tk.value == "print" ||
-             tk.value == "def" || tk.value == "return" || tk.value == "yield" ||
-             tk.value == "class" || tk.value == "lambda" || tk.value == "if" ||
-             tk.value == "while" || tk.value == "for" || tk.value == "with"))
-            || tk.type == TokenType::STRING) {
+    while (position < tokens_list.size() && currentToken().type != TokenType::END) {
+        while (position < tokens_list.size() && (currentToken().type == TokenType::NEWLINE || currentToken().type == TokenType::DEDENT)) {
+            consumeToken();
+        }
+        if (position >= tokens_list.size() || currentToken().type == TokenType::END) {
             break;
         }
-        ++position;
+        statements.push_back(parseStatement());
     }
+    return ASTNode("Program", startToken, statements);
 }
-
-//------------------------------------------------------------
-// parseStatement: handles assignment, control flow, etc.
-//------------------------------------------------------------
 ASTNode Parser::parseStatement() {
-    // Handle 'with' statement.
-    if (tokens[position].type == TokenType::KEYWORD && tokens[position].value == "with")
-        return parseWith();
-
-    // Handle 'for' loops.
-    if (tokens[position].type == TokenType::KEYWORD && tokens[position].value == "for")
-        return parseFor();
-
-    if (tokens[position].type == TokenType::IDENTIFIER) {
-        if (position + 1 < tokens.size() &&
-            tokens[position+1].type == TokenType::OPERATOR &&
-            tokens[position+1].value == "=") {
-            std::string varName = tokens[position].value;
-            position += 2; // consume identifier and '='
-            ASTNode expr = parseArgument();
-            return ASTNode("Assignment", varName, { expr });
-        } else {
-            ASTNode idNode("Identifier", tokens[position].value);
-            ++position;
-            return idNode;
+    Token tk = currentToken();
+    if (tk.type == TokenType::KEYWORD) {
+        if (tk.value == "if" || tk.value == "while" || tk.value == "for" ||
+            tk.value == "def" || tk.value == "class" || tk.value == "with" ||
+            tk.value == "try") {
+            return parseCompoundStatement();
         }
     }
-    
-    if (tokens[position].type == TokenType::STRING) {
-        ASTNode docString("DocString", tokens[position].value);
-        ++position;
-        return docString;
-    }
-    
-    if (tokens[position].type == TokenType::KEYWORD) {
-        std::string kw = tokens[position].value;
-        if (kw == "def")
-            return parseFunctionDef();
-        if (kw == "lambda")
-            return parseLambda();
-        if (kw == "return")
-            return parseReturn();
-        if (kw == "yield")
-            return parseYield();
-        if (kw == "class")
-            return parseClass();
-        if (kw == "if")
-            return parseIf();
-        if (kw == "while")
-            return parseWhile();
-        if (kw == "import")
-            return parseImport();
-        if (kw == "from")
-            return parseFromImport();
-    }
-    
-    // Accept BUILTIN tokens as valid function calls too.
-    if (tokens[position].type == TokenType::IDENTIFIER ||
-        tokens[position].type == TokenType::BUILTIN ||
-        (tokens[position].type == TokenType::KEYWORD &&
-         (tokens[position].value == "print" || tokens[position].value == "int" || tokens[position].value == "input"))) {
-         return parseFunctionCall();
-    }
-    
-    std::string tokenValue = tokens[position].value;
-    ++position;
-    return ASTNode("Unsupported", tokenValue);
+    return parseSimpleStatement();
 }
-
-//------------------------------------------------------------
-// Parse control flow and compound statements
-//------------------------------------------------------------
-ASTNode Parser::parseIf() {
-    Token ifToken = tokens[position];
-    ++position; // consume 'if'
-    ASTNode condition = parseArgument();
-    if (position >= tokens.size() ||
-        tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-         throw std::runtime_error(formatError("Expected ':' after if condition", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ':'
-    ASTNode thenBlock = parseStatement();
-    ASTNode currentIf("If", "", { condition, thenBlock });
-    while (position < tokens.size() && tokens[position].type == TokenType::KEYWORD && tokens[position].value == "elif") {
-         ++position; // consume 'elif'
-         ASTNode elifCondition = parseArgument();
-         if (position >= tokens.size() ||
-             tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-             throw std::runtime_error(formatError("Expected ':' after elif condition", (position < tokens.size() ? tokens[position] : tokens.back())));
-         ++position; // consume ':'
-         ASTNode elifBlock = parseStatement();
-         currentIf = ASTNode("If", "", { currentIf, ASTNode("If", "", { elifCondition, elifBlock }) });
+ASTNode Parser::parseCompoundStatement() {
+    Token tk = currentToken();
+    if (tk.type == TokenType::KEYWORD) {
+        if (tk.value == "if") return parseIfStatement();
+        if (tk.value == "while") return parseWhileStatement();
+        if (tk.value == "def") return parseFunctionDef();
     }
-    if (position < tokens.size() && tokens[position].type == TokenType::KEYWORD && tokens[position].value == "else") {
-         ++position; // consume 'else'
-         if (position >= tokens.size() ||
-             tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-             throw std::runtime_error(formatError("Expected ':' after else", (position < tokens.size() ? tokens[position] : tokens.back())));
-         ++position; // consume ':'
-         ASTNode elseBlock = parseStatement();
-         currentIf = ASTNode("If", "", { currentIf, elseBlock });
+    throw std::runtime_error(formatError("Expected a compound statement keyword (if, while, def, etc.)", tk));
+}
+ASTNode Parser::parseSimpleStatement() {
+    Token startToken = currentToken();
+    std::vector<ASTNode> small_stmts;
+    small_stmts.push_back(parseSmallStatement());
+    while (matchToken(TokenType::PUNCTUATION, ";")) {
+        if (currentToken().type == TokenType::NEWLINE ||
+            (currentToken().type == TokenType::END && position >= tokens_list.size()-1) ||
+            currentToken().type == TokenType::DEDENT) {
+            break;
+        }
+        small_stmts.push_back(parseSmallStatement());
     }
-    return currentIf;
-}
-
-ASTNode Parser::parseWhile() {
-    Token whileToken = tokens[position];
-    ++position; // consume 'while'
-    ASTNode condition = parseArgument();
-    if (position >= tokens.size() ||
-        tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-         throw std::runtime_error(formatError("Expected ':' after while condition", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ':'
-    // Parse a suite (block) of statements for the while body.
-    ASTNode body = parseSuite();
-    return ASTNode("While", "", { condition, body });
-}
-
-ASTNode Parser::parseFor() {
-    Token forToken = tokens[position];
-    ++position; // consume 'for'
-    if (position >= tokens.size() || tokens[position].type != TokenType::IDENTIFIER)
-        throw std::runtime_error(formatError("Expected loop variable after 'for'", (position < tokens.size() ? tokens[position] : forToken)));
-    std::string loopVar = tokens[position].value;
-    ++position;
-    if (position >= tokens.size() || tokens[position].value != "in")
-        throw std::runtime_error(formatError("Expected 'in' after loop variable", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume 'in'
-    ASTNode iterable = parseArgument();
-    if (position >= tokens.size() ||
-        tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-        throw std::runtime_error(formatError("Expected ':' after for-loop header", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ':'
-    ASTNode body = parseStatement();
-    return ASTNode("For", loopVar, { iterable, body });
-}
-
-ASTNode Parser::parseWith() {
-    Token withToken = tokens[position];
-    ++position; // consume 'with'
-    ASTNode contextExpr = parseArgument();
-    std::string varName = "";
-    if (position < tokens.size() && tokens[position].type == TokenType::KEYWORD &&
-        tokens[position].value == "as") {
-        ++position; // consume 'as'
-        if (position >= tokens.size() || tokens[position].type != TokenType::IDENTIFIER)
-            throw std::runtime_error(formatError("Expected identifier after 'as'", (position < tokens.size() ? tokens[position] : tokens.back())));
-        varName = tokens[position].value;
-        ++position;
+    if (currentToken().type == TokenType::NEWLINE) {
+        consumeToken(TokenType::NEWLINE);
+    } else if (!((currentToken().type == TokenType::END && position >= tokens_list.size()-1) || currentToken().type == TokenType::DEDENT)) {
+        throw std::runtime_error(formatError("Simple statement list not terminated by NEWLINE, EOF, or DEDENT", currentToken()));
     }
-    if (position >= tokens.size() ||
-        tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ":")
-         throw std::runtime_error(formatError("Expected ':' after with statement header", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ':'
-    ASTNode body = parseStatement();
-    return ASTNode("With", varName, { contextExpr, body });
+    if (small_stmts.size() == 1) return small_stmts[0];
+    return ASTNode("SimpleStmtList", startToken, small_stmts);
 }
-
-ASTNode Parser::parseImport() {
-    Token importToken = tokens[position];
-    ++position; // consume 'import'
-    if (position >= tokens.size() || tokens[position].type != TokenType::IDENTIFIER)
-        throw std::runtime_error(formatError("Expected identifier after 'import'", (position < tokens.size() ? tokens[position] : importToken)));
-    std::string moduleName = tokens[position].value;
-    ++position;
-    while (position < tokens.size() &&
-           tokens[position].type == TokenType::PUNCTUATION &&
-           tokens[position].value == ",") {
-        ++position;
-        if (position < tokens.size() && tokens[position].type == TokenType::IDENTIFIER)
-            ++position;
+ASTNode Parser::parseSmallStatement() {
+    Token tk = currentToken();
+    if (tk.type == TokenType::NEWLINE || tk.type == TokenType::DEDENT || (tk.type == TokenType::END && position >= tokens_list.size()-1)) {
+        throw std::runtime_error(formatError("Unexpected token at start of a small statement. Expected an expression, assignment, or keyword.", tk));
     }
-    return ASTNode("Import", moduleName);
-}
-
-ASTNode Parser::parseFromImport() {
-    Token fromToken = tokens[position];
-    ++position; // consume 'from'
-    if (position >= tokens.size() ||
-       (tokens[position].type != TokenType::IDENTIFIER && tokens[position].type != TokenType::KEYWORD))
-        throw std::runtime_error(formatError("Expected module identifier after 'from'", (position < tokens.size() ? tokens[position] : fromToken)));
-    std::string moduleName = tokens[position].value;
-    ++position;
-    while (position < tokens.size() &&
-           tokens[position].type == TokenType::PUNCTUATION &&
-           tokens[position].value == ".") {
-        moduleName += ".";
-        ++position;
-        if (position < tokens.size() &&
-           (tokens[position].type == TokenType::IDENTIFIER || tokens[position].type == TokenType::KEYWORD)) {
-            moduleName += tokens[position].value;
-            ++position;
-        } else {
-            throw std::runtime_error(formatError("Expected identifier after '.' in module name", (position < tokens.size() ? tokens[position] : tokens.back())));
+    if (tk.type == TokenType::KEYWORD) {
+        if (tk.value == "break") return parseBreakStatement();
+        if (tk.value == "return") return parseReturnStatement();
+        if (tk.value == "pass") {
+            Token pass_tok = consumeToken();
+            return ASTNode("PassStatement", pass_tok);
         }
     }
-    if (position >= tokens.size() || tokens[position].type != TokenType::KEYWORD || tokens[position].value != "import")
-        throw std::runtime_error(formatError("Expected 'import' keyword after module name in from-import statement", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume 'import'
-    while (position < tokens.size() &&
-           (tokens[position].type == TokenType::IDENTIFIER ||
-            tokens[position].type == TokenType::KEYWORD ||
-            (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ",") ||
-            (tokens[position].type == TokenType::KEYWORD && tokens[position].value == "as")))
-    {
-         ++position;
+    if (tk.type == TokenType::IDENTIFIER && (position + 1 < tokens_list.size()) &&
+        tokens_list[position + 1].type == TokenType::OPERATOR && tokens_list[position + 1].value == "=") {
+        return parseAssignmentStatement();
     }
-    return ASTNode("Import", moduleName);
+    return parseExpressionStatement();
 }
-
-ASTNode Parser::parseListLiteral() {
-    ++position; // consume '['
-    std::vector<ASTNode> elements;
-    while (position < tokens.size() && !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "]")) {
-        elements.push_back(parseArgument());
-        if (position < tokens.size() && tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ",")
-            ++position;
-    }
-    if (position >= tokens.size() || tokens[position].value != "]")
-        throw std::runtime_error(formatError("Expected ']' to close list literal", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ']'
-    return ASTNode("ListLiteral", "", elements);
+ASTNode Parser::parseBreakStatement() {
+    Token break_tok = consumeToken(TokenType::KEYWORD);
+    return ASTNode("BreakStatement", break_tok);
 }
-
-//------------------------------------------------------------
-// parseArgument: collects tokens until a stop token is encountered.
-//------------------------------------------------------------
-ASTNode Parser::parseArgument() {
-    // If the next tokens indicate a function call, parse it as such.
-    if ((tokens[position].type == TokenType::IDENTIFIER ||
-         tokens[position].type == TokenType::BUILTIN ||
-         (tokens[position].type == TokenType::KEYWORD &&
-          (tokens[position].value == "input" || tokens[position].value == "print" || tokens[position].value == "int")))
-         && (position + 1 < tokens.size() &&
-             tokens[position+1].type == TokenType::PUNCTUATION && tokens[position+1].value == "(")) {
-        return parseFunctionCall();
+ASTNode Parser::parseReturnStatement() {
+    Token ret_tok = consumeToken(TokenType::KEYWORD);
+    std::vector<ASTNode> children;
+    if (currentToken().type != TokenType::NEWLINE &&
+        !(currentToken().type == TokenType::PUNCTUATION && currentToken().value == ";") &&
+        currentToken().type != TokenType::DEDENT && !(currentToken().type == TokenType::END && position >= tokens_list.size()-1)) {
+        children.push_back(parseArgument());
     }
-    
-    // Handle boolean literals.
-    if (tokens[position].type == TokenType::IDENTIFIER &&
-       (tokens[position].value == "True" || tokens[position].value == "False")) {
-        ASTNode boolNode("Boolean", tokens[position].value);
-        ++position;
-        return boolNode;
-    }
-    
-    // Return identifiers directly.
-    if (tokens[position].type == TokenType::IDENTIFIER) {
-        if (position + 1 < tokens.size() && tokens[position+1].type == TokenType::OPERATOR) {
-            // Fall through to accumulate tokens.
-        } else {
-            ASTNode idNode("Identifier", tokens[position].value);
-            ++position;
-            return idNode;
-        }
-    }
-    
-    if (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "[")
-        return parseListLiteral();
-    
-    std::string argumentValue;
-    int bracketDepth = 0;
-    int parenDepth = 0;
-    // Keywords that signal stopping.
-    std::set<std::string> stopKeywords = {"def", "return", "yield", "class", "if", "while", "for", "with", "import", "from", "print", "break", "continue", "pass", "try", "except", "raise", "finally"};
-    
-    int tokenCount = 0;
-    const int maxTokensPerArg = 1000;
-
-    while (position < tokens.size() && tokenCount < maxTokensPerArg) {
-        const Token& tk = tokens[position];
-        
-        // Stop if punctuation ":" is encountered and no grouping is active.
-        if (tk.type == TokenType::PUNCTUATION && tk.value == ":" && parenDepth == 0 && bracketDepth == 0)
-            break;
-        
-        // Stop if a new statement starts.
-        if (tk.type == TokenType::KEYWORD && stopKeywords.find(tk.value) != stopKeywords.end() && tokenCount > 0)
-            break;
-        
-        // Stop if closing punctuation encountered.
-        if (tk.type == TokenType::PUNCTUATION && (tk.value == ")" || tk.value == ",") && parenDepth == 0 && bracketDepth == 0)
-            break;
-        
-        if (tk.type == TokenType::END)
-            break;
-        
-        if (tk.type == TokenType::PUNCTUATION) {
-            if (tk.value == "(") parenDepth++;
-            else if (tk.value == ")") {
-                if (parenDepth == 0) break;
-                parenDepth--;
-            }
-            else if (tk.value == "[") bracketDepth++;
-            else if (tk.value == "]") bracketDepth--;
-        }
-        if (tk.type == TokenType::OPERATOR && tk.value == "=" && parenDepth == 0 && bracketDepth == 0)
-            break;
-        
-        if (tk.value == "is")
-            argumentValue += " is ";
-        else
-            argumentValue += tk.value;
-        
-        ++position;
-        ++tokenCount;
-    }
-    
-    if (tokenCount >= maxTokensPerArg) {
-        std::cerr << "[DEBUG] parseArgument: reached maximum tokens per argument, breaking loop.\n";
-    }
-    
-    return ASTNode("Argument", argumentValue);
+    return ASTNode("ReturnStatement", ret_tok, children);
 }
-
-ASTNode Parser::parseFunctionCall() {
-    if (tokens[position].type != TokenType::IDENTIFIER &&
-        tokens[position].type != TokenType::KEYWORD &&
-        tokens[position].type != TokenType::BUILTIN)
-         throw std::runtime_error(formatError("Expected function name", tokens[position]));
-    std::string functionName = tokens[position].value;
-    ++position;
-    while (position < tokens.size() &&
-           tokens[position].type == TokenType::PUNCTUATION &&
-           tokens[position].value == ".") {
-         functionName += ".";
-         ++position;
-         if (position < tokens.size() &&
-             (tokens[position].type == TokenType::IDENTIFIER ||
-              tokens[position].type == TokenType::KEYWORD ||
-              tokens[position].type == TokenType::BUILTIN)) {
-             functionName += tokens[position].value;
-             ++position;
-         } else {
-             throw std::runtime_error(formatError("Expected identifier after '.'", (position < tokens.size() ? tokens[position] : tokens.back())));
-         }
-    }
-    if (position >= tokens.size() ||
-        tokens[position].type != TokenType::PUNCTUATION ||
-        tokens[position].value != "(") {
-         skipUnsupportedStatement();
-         return ASTNode("Unsupported", functionName);
-    }
-    ++position; // consume '('
-    std::vector<ASTNode> arguments;
-    while (true) {
-         if (position >= tokens.size())
-             throw std::runtime_error(formatError("Missing closing parenthesis in function call", (position < tokens.size() ? tokens[position] : tokens.back())));
-         if (tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ")") {
-             ++position;
-             break;
-         }
-         if (tokens[position].type == TokenType::IDENTIFIER &&
-             (position + 1 < tokens.size() && tokens[position+1].type == TokenType::OPERATOR && tokens[position+1].value == "=")) {
-             std::string key = tokens[position].value;
-             position += 2; // consume identifier and '='
-             ASTNode valueNode = parseArgument();
-             ASTNode kwArg("KeywordArgument", key, { valueNode });
-             arguments.push_back(kwArg);
-         } else {
-             ASTNode argNode = parseArgument();
-             arguments.push_back(argNode);
-         }
-         if (position < tokens.size() &&
-             tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ",") {
-             ++position;
-             continue;
-         }
-    }
-    return ASTNode("FunctionCall", functionName, arguments);
+ASTNode Parser::parseAssignmentStatement() {
+    Token var_token = consumeToken(TokenType::IDENTIFIER);
+    expectToken(TokenType::OPERATOR, "=");
+    ASTNode value_node = parseArgument();
+    return ASTNode("Assignment", var_token.value, var_token, {value_node});
 }
-
-ASTNode Parser::parseFunctionDef() {
-    Token defToken = tokens[position];
-    ++position; // consume 'def'
-    if (position >= tokens.size() || tokens[position].type != TokenType::IDENTIFIER)
-         throw std::runtime_error(formatError("Expected function name after def", (position < tokens.size() ? tokens[position] : defToken)));
-    std::string funcName = tokens[position].value;
-    ++position;
-    if (position >= tokens.size() || tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != "(")
-         throw std::runtime_error(formatError("Expected '(' after function name", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume '('
-    std::vector<ASTNode> parameters;
-    while (position < tokens.size() &&
-           !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ")")) {
-         if (tokens[position].type == TokenType::IDENTIFIER) {
-              parameters.push_back(ASTNode("Parameter", tokens[position].value));
-              ++position;
-              if (position < tokens.size() &&
-                  tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ",")
-                  ++position;
-         } else {
-              ++position;
-         }
-    }
-    if (position >= tokens.size() || tokens[position].type != TokenType::PUNCTUATION || tokens[position].value != ")")
-         throw std::runtime_error(formatError("Expected ')' after parameter list", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ')'
-    while (position < tokens.size() &&
-           !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ":")) {
-         ++position;
-    }
-    if (position >= tokens.size())
-         throw std::runtime_error(formatError("Expected ':' after function header", (position < tokens.size() ? tokens[position] : tokens.back())));
-    ++position; // consume ':'
-    ASTNode body = parseStatement();
-    ASTNode params("Parameters", parameters);
-    return ASTNode("FunctionDef", funcName, { params, body });
+ASTNode Parser::parseExpressionStatement() {
+    Token expr_start_tok = currentToken();
+    ASTNode expr_node = parseArgument();
+    return ASTNode("ExpressionStatement", expr_start_tok, {expr_node});
 }
-
-ASTNode Parser::parseReturn() {
-    Token retToken = tokens[position];
-    ++position; // consume 'return'
-    if (position < tokens.size() &&
-        !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "\n")) {
-         ASTNode expr = parseArgument();
-         return ASTNode("Return", "", { expr });
-    } else {
-         return ASTNode("Return", "");
-    }
-}
-
-ASTNode Parser::parseYield() {
-    Token yieldToken = tokens[position];
-    ++position; // consume 'yield'
-    if (position < tokens.size() &&
-        !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "\n")) {
-         ASTNode expr = parseArgument();
-         return ASTNode("Yield", "", { expr });
-    }
-    return ASTNode("Yield", "");
-}
-
-ASTNode Parser::parseClass() {
-    Token classToken = tokens[position];
-    ++position; // consume 'class'
-    if (position >= tokens.size() || tokens[position].type != TokenType::IDENTIFIER)
-         throw std::runtime_error(formatError("Expected class name after 'class'", (position < tokens.size() ? tokens[position] : classToken)));
-    std::string className = tokens[position].value;
-    ++position;
-    while (position < tokens.size() &&
-           !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == ":")) {
-         ++position;
-    }
-    if (position < tokens.size()) ++position; // consume ':'
-    ASTNode body = parseStatement();
-    return ASTNode("Class", className, { body });
-}
-
-ASTNode Parser::parseLambda() {
-    Token lambdaToken = tokens[position];
-    ++position; // consume 'lambda'
-    std::vector<ASTNode> parameters;
-    while (position < tokens.size() && tokens[position].value != ":") {
-        if (tokens[position].type == TokenType::IDENTIFIER) {
-            parameters.push_back(ASTNode("Parameter", tokens[position].value));
-        }
-        ++position;
-    }
-    if (position >= tokens.size() || tokens[position].value != ":")
-        throw std::runtime_error(formatError("Expected ':' in lambda expression", (position < tokens.size() ? tokens[position] : lambdaToken)));
-    ++position; // consume ':'
-    ASTNode expr = parseArgument();
-    ASTNode paramsNode("Parameters", parameters);
-    return ASTNode("Lambda", "", { paramsNode, expr });
-}
-
-//------------------------------------------------------------
-// parseSuite: parses a block (suite) of statements
-//------------------------------------------------------------
 ASTNode Parser::parseSuite() {
+    Token suite_start_token = currentToken();
     std::vector<ASTNode> statements;
-    // If the suite is enclosed in braces, parse multiple statements until the closing brace.
-    if (position < tokens.size() &&
-        tokens[position].type == TokenType::PUNCTUATION &&
-        tokens[position].value == "{") {
-        ++position; // consume '{'
-        while (position < tokens.size() &&
-               !(tokens[position].type == TokenType::PUNCTUATION && tokens[position].value == "}")) {
-            statements.push_back(parseStatement());
-            // Optionally consume semicolon between statements.
-            if (position < tokens.size() &&
-                tokens[position].type == TokenType::PUNCTUATION &&
-                tokens[position].value == ";") {
-                ++position;
+    if (matchToken(TokenType::NEWLINE)) {
+        expectToken(TokenType::INDENT);
+        while (currentToken().type != TokenType::DEDENT && !(currentToken().type == TokenType::END && position >= tokens_list.size()-1)) {
+            while(currentToken().type == TokenType::NEWLINE) {
+                consumeToken();
             }
+            if(currentToken().type == TokenType::DEDENT || (currentToken().type == TokenType::END && position >= tokens_list.size()-1)) {
+                break;
+            }
+            statements.push_back(parseStatement());
         }
-        if (position < tokens.size() &&
-            tokens[position].type == TokenType::PUNCTUATION &&
-            tokens[position].value == "}") {
-            ++position; // consume '}'
-        } else {
-            throw std::runtime_error("Expected '}' to close block");
+        if (currentToken().type == TokenType::DEDENT) {
+            consumeToken(TokenType::DEDENT);
+        } else if (!((currentToken().type == TokenType::END && position >= tokens_list.size()-1))) {
+             throw std::runtime_error(formatError("Expected DEDENT to close block", currentToken()));
         }
     } else {
-        // Otherwise, parse a single statement.
-        statements.push_back(parseStatement());
-        // Allow semicolon-separated additional statements.
-        while (position < tokens.size() &&
-               tokens[position].type == TokenType::PUNCTUATION &&
-               tokens[position].value == ";") {
-            ++position; // consume ';'
-            if (position < tokens.size() && tokens[position].type != TokenType::END) {
-                statements.push_back(parseStatement());
-            }
+        statements.push_back(parseSimpleStatement());
+    }
+    if (statements.empty()) {
+        return ASTNode("Suite", suite_start_token, {ASTNode("PassStatement", suite_start_token)});
+    }
+    return ASTNode("Suite", suite_start_token, statements);
+}
+ASTNode Parser::parseIfStatement() {
+    Token if_tok = consumeToken(TokenType::KEYWORD);
+    ASTNode condition = parseArgument();
+    expectToken(TokenType::PUNCTUATION, ":");
+    ASTNode then_block = parseSuite();
+    std::vector<ASTNode> children = {condition, then_block};
+    if (currentToken().type == TokenType::KEYWORD && currentToken().value == "elif") {
+        children.push_back(parseIfStatement());
+    } else if (matchToken(TokenType::KEYWORD, "else")) {
+        expectToken(TokenType::PUNCTUATION, ":");
+        children.push_back(parseSuite());
+    }
+    return ASTNode("If", if_tok, children);
+}
+ASTNode Parser::parseWhileStatement() {
+    Token while_tok = consumeToken(TokenType::KEYWORD);
+    ASTNode condition = parseArgument();
+    expectToken(TokenType::PUNCTUATION, ":");
+    ASTNode body = parseSuite();
+    return ASTNode("While", while_tok, {condition, body});
+}
+ASTNode Parser::parseFunctionDef() {
+    Token def_tok = consumeToken(TokenType::KEYWORD);
+    Token name_tok = consumeToken(TokenType::IDENTIFIER);
+    expectToken(TokenType::PUNCTUATION, "(");
+    std::vector<ASTNode> params_nodes;
+    bool first_param = true;
+    while(currentToken().type != TokenType::PUNCTUATION || currentToken().value != ")"){
+        if(!first_param){
+            expectToken(TokenType::PUNCTUATION, ",");
+        }
+        first_param = false;
+        Token param_tok = consumeToken(TokenType::IDENTIFIER);
+        params_nodes.push_back(ASTNode("Parameter", param_tok.value, param_tok));
+    }
+    expectToken(TokenType::PUNCTUATION, ")");
+    expectToken(TokenType::PUNCTUATION, ":");
+    ASTNode body = parseSuite();
+    ASTNode params_container("Parameters", name_tok, params_nodes);
+    return ASTNode("FunctionDef", name_tok.value, def_tok, {params_container, body});
+}
+ASTNode Parser::parseArgument() {
+    return parseComparison();
+}
+ASTNode Parser::parseComparison() {
+    Token expr_start_tok = currentToken();
+    ASTNode left = parsePrimary();
+    while (currentToken().type == TokenType::OPERATOR &&
+           (currentToken().value == "<" || currentToken().value == ">" ||
+            currentToken().value == "==" || currentToken().value == "!=" ||
+            currentToken().value == "<=" || currentToken().value == ">=")) {
+        Token op_tok = consumeToken(TokenType::OPERATOR);
+        ASTNode right = parsePrimary();
+        left = ASTNode("BinaryOp", op_tok.value, op_tok, {left, right});
+    }
+    return left;
+}
+ASTNode Parser::parsePrimary() {
+    Token tk = currentToken();
+    if (tk.type == TokenType::NUMBER) {
+        consumeToken();
+        return ASTNode("NumberLiteral", tk.value, tk);
+    } else if (tk.type == TokenType::STRING) {
+        consumeToken();
+        return ASTNode("StringLiteral", tk.value, tk);
+    } else if (tk.type == TokenType::IDENTIFIER) {
+        if (position + 1 < tokens_list.size() && tokens_list[position + 1].type == TokenType::PUNCTUATION && tokens_list[position + 1].value == "(") {
+            return parseFunctionCall();
+        }
+        consumeToken();
+        return ASTNode("Identifier", tk.value, tk);
+    } else if (tk.type == TokenType::BUILTIN) {
+         if (position + 1 < tokens_list.size() && tokens_list[position + 1].type == TokenType::PUNCTUATION && tokens_list[position + 1].value == "(") {
+            return parseFunctionCall();
+        }
+        throw std::runtime_error(formatError("Expected '(' after built-in function name", tk));
+    } else if (tk.type == TokenType::KEYWORD && (tk.value == "True" || tk.value == "False" || tk.value == "None")) {
+        consumeToken();
+        return ASTNode("KeywordLiteral", tk.value, tk);
+    } else if (matchToken(TokenType::PUNCTUATION, "(")) {
+        ASTNode expr = parseArgument();
+        expectToken(TokenType::PUNCTUATION, ")");
+        return expr;
+    }
+    throw std::runtime_error(formatError("Unexpected token in expression primary", tk));
+}
+ASTNode Parser::parseFunctionCall() {
+    Token name_tok = currentToken();
+    if (name_tok.type != TokenType::IDENTIFIER && name_tok.type != TokenType::BUILTIN) {
+         throw std::runtime_error(formatError("Expected function name (Identifier or Builtin) for call", name_tok));
+    }
+    consumeToken();
+    expectToken(TokenType::PUNCTUATION, "(");
+    std::vector<ASTNode> args;
+    bool first_arg = true;
+    while (!(currentToken().type == TokenType::PUNCTUATION && currentToken().value == ")")) {
+        if (!first_arg) {
+            expectToken(TokenType::PUNCTUATION, ",");
+        }
+        first_arg = false;
+        if (currentToken().type == TokenType::IDENTIFIER &&
+            (position + 1 < tokens_list.size()) &&
+            tokens_list[position+1].type == TokenType::OPERATOR &&
+            tokens_list[position+1].value == "=")
+        {
+            Token kw_name_tok = consumeToken(TokenType::IDENTIFIER);
+            expectToken(TokenType::OPERATOR, "=");
+            ASTNode kw_val_node = parseArgument();
+            args.push_back(ASTNode("KeywordArgument", kw_name_tok.value, kw_name_tok, {kw_val_node}));
+        } else {
+            args.push_back(parseArgument());
         }
     }
-    if (statements.size() == 1) {
-        return statements[0];
-    }
-    return ASTNode("Suite", "", statements);
+    expectToken(TokenType::PUNCTUATION, ")");
+    return ASTNode("FunctionCall", name_tok.value, name_tok, args);
 }
