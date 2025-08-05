@@ -1,4 +1,3 @@
-// ast.cpp
 #include "ast.h"
 #include "lexer.h"
 #include <iostream>
@@ -222,7 +221,7 @@ std::string CodeGenerator::processFString(const std::string &fstr) {
 }
 
 std::string CodeGenerator::findPythonFolder() {
-    return "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13";
+    //TODO:be implemented
 }
 
 void CodeGenerator::compileModule(const std::string &moduleName) {
@@ -491,7 +490,7 @@ std::string CodeGenerator::generateAssembly(
         ss << indent << "movq $0, %rax\n";
         return ss.str();
     }
-    // FunctionCall int (compile-time for literals, fallback to runtime)
+    // FunctionCall int
     else if (node.type == "FunctionCall" && node.value == "int") {
         if (node.children.empty())
             throw std::runtime_error("int() requires an argument.");
