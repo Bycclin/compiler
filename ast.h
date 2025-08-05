@@ -1,4 +1,3 @@
-// ast.h
 #ifndef AST_H
 #define AST_H
 
@@ -6,16 +5,14 @@
 #include <vector>
 #include <set>
 #include <map>
-#include "parser.h" // Contains ASTNode definition
+#include "parser.h"
 
 class CodeGenerator {
 public:
     explicit CodeGenerator(const ASTNode &ast);
-    // Added assemblyOnly flag to emit .s only when -S is passed
     void generateBinary(const std::string &outputFile, bool assemblyOnly = false);
 
 private:
-    // Private members
     ASTNode astRoot;
     std::string dataSection;
     std::string functionSection;
@@ -25,8 +22,6 @@ private:
     bool sysPathListGenerated;
     std::string sysPathListLabel;
     std::set<std::string> definedNames;
-
-    // Private methods
     std::string generateAssembly(const ASTNode &node, int indentLevel = 1, bool inFunction = false, const std::string &brkLabel = "");
     std::string generateLabel(const std::string &prefix);
     std::string escapeString(const std::string &str);
