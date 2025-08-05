@@ -1,4 +1,3 @@
-// main.cpp
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -100,8 +99,6 @@ int main(int argc, char *argv[]) {
         Parser parser(tokens);
         ASTNode root = parser.parse();
         CodeGenerator codeGen(root);
-
-        // Pass assemblyFlag so we stop after emitting .s if -S was given
         codeGen.generateBinary(outputFile, assemblyFlag);
 
         if (execFlag && !assemblyFlag) {
